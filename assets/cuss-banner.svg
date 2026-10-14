@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 380" width="100%" height="380" fill="none">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1200" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#07070C" />
+      <stop offset="55%" stop-color="#0D0E18" />
+      <stop offset="100%" stop-color="#07070C" />
+    </linearGradient>
+    <linearGradient id="prismGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#D4FF00" stop-opacity="0.22" />
+      <stop offset="100%" stop-color="#00F0FF" stop-opacity="0.06" />
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#181B2C" stroke-width="1" />
+    </pattern>
+  </defs>
+
+  <!-- Obsidian Canvas & Architectural Grid -->
+  <rect width="1200" height="380" rx="24" fill="url(#bgGrad)" />
+  <rect width="1200" height="380" rx="24" fill="url(#grid)" opacity="0.55" />
+  <rect x="3" y="3" width="1194" height="374" rx="22" stroke="#2B2F48" stroke-width="2" />
+
+  <!-- Brutalist Corner Brackets -->
+  <path d="M 28 64 L 28 28 L 64 28" stroke="#D4FF00" stroke-width="4" stroke-linecap="square" />
+  <path d="M 1172 64 L 1172 28 L 1136 28" stroke="#00F0FF" stroke-width="4" stroke-linecap="square" />
+  <path d="M 28 316 L 28 352 L 64 352" stroke="#FF2A85" stroke-width="4" stroke-linecap="square" />
+  <path d="M 1172 316 L 1172 352 L 1136 352" stroke="#D4FF00" stroke-width="4" stroke-linecap="square" />
+
+  <!-- Top Telemetry Eyebrow Pill -->
+  <rect x="64" y="36" width="320" height="28" rx="8" fill="#121422" stroke="#2B2F48" stroke-width="1.5" />
+  <circle cx="82" cy="50" r="4.5" fill="#D4FF00" />
+  <text x="96" y="54" fill="#00F0FF" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="11.5" font-weight="700" letter-spacing="2">01 // MOBILE STUDIO DECK FOR CURSOR</text>
+
+  <!-- Left Bespoke CUSS Sculptural Crest -->
+  <g transform="translate(190, 196)">
+    <!-- Outer Registration Dial -->
+    <circle cx="0" cy="0" r="108" stroke="#2B2F48" stroke-width="1.5" stroke-dasharray="4 10" />
+    <circle cx="0" cy="0" r="88" stroke="#00F0FF" stroke-width="1.5" stroke-opacity="0.45" />
+    <path d="M -68 0 A 68 68 0 0 1 68 0" stroke="#D4FF00" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M 68 0 A 68 68 0 0 1 -68 0" stroke="#FF2A85" stroke-width="2" stroke-dasharray="6 8" />
+    <line x1="0" y1="-116" x2="0" y2="-98" stroke="#D4FF00" stroke-width="3" />
+    <line x1="0" y1="98" x2="0" y2="116" stroke="#00F0FF" stroke-width="3" />
+    <line x1="-116" y1="0" x2="-98" y2="0" stroke="#FF2A85" stroke-width="3" />
+    <line x1="98" y1="0" x2="116" y2="0" stroke="#D4FF00" stroke-width="3" />
+
+    <!-- Octagonal Prism Plate -->
+    <polygon points="-32,-56 32,-56 56,-32 56,32 32,56 -32,56 -56,32 -56,-32" fill="url(#prismGrad)" stroke="#D4FF00" stroke-width="2.5" />
+    <rect x="-38" y="-38" width="76" height="76" rx="14" fill="#090A12" stroke="#42486E" stroke-width="1.5" />
+
+    <!-- Geometric 'C' + Umbilical Spark Mark -->
+    <path d="M 16 -20 H -12 L -24 -8 V 8 L -12 20 H 16" stroke="#F4F0EA" stroke-width="6.5" stroke-linecap="square" fill="none" />
+    <polygon points="4,-12 24,0 4,12 10,0" fill="#D4FF00" />
+    <circle cx="-8" cy="0" r="5" fill="#FF2A85" />
+  </g>
+
+  <!-- Center/Right Hero Wordmark & Typography Lockup -->
+  <text x="355" y="182" fill="#D4FF00" font-family="system-ui, -apple-system, 'Arial Black', sans-serif" font-size="112" font-weight="900" letter-spacing="12">CUSS</text>
+
+  <!-- Tri-Color Accent Bar -->
+  <rect x="360" y="198" width="210" height="6" rx="3" fill="#D4FF00" />
+  <rect x="578" y="198" width="72" height="6" rx="3" fill="#00F0FF" />
+  <rect x="658" y="198" width="72" height="6" rx="3" fill="#FF2A85" />
+
+  <text x="360" y="236" fill="#F4F0EA" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="20" font-weight="800" letter-spacing="4.5">CYBERNETIC UMBILICAL STUDIO &amp; SYNTH</text>
+  <text x="360" y="268" fill="#8F95B8" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="500">Headless Mac Cursor CLI &amp; IDE Control Deck for Android (Expo Go) · Zero API Keys · Saved on Device</text>
+
+  <!-- Bottom Feature Pills Strip -->
+  <g transform="translate(360, 292)">
+    <rect x="0" y="0" width="154" height="32" rx="8" fill="#141726" stroke="#D4FF00" stroke-width="1.5" />
+    <text x="77" y="20" text-anchor="middle" fill="#D4FF00" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5" font-weight="700" letter-spacing="1">AUTO + GROK 4.7</text>
+
+    <rect x="166" y="0" width="166" height="32" rx="8" fill="#141726" stroke="#00F0FF" stroke-width="1.5" />
+    <text x="249" y="20" text-anchor="middle" fill="#00F0FF" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5" font-weight="700" letter-spacing="1">IN-APP FILE VIEWER</text>
+
+    <rect x="344" y="0" width="164" height="32" rx="8" fill="#141726" stroke="#FF2A85" stroke-width="1.5" />
+    <text x="426" y="20" text-anchor="middle" fill="#FF2A85" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5" font-weight="700" letter-spacing="1">GIT + SHELL + GCP</text>
+
+    <rect x="520" y="0" width="168" height="32" rx="8" fill="#141726" stroke="#A855F7" stroke-width="1.5" />
+    <text x="604" y="20" text-anchor="middle" fill="#A855F7" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5" font-weight="700" letter-spacing="1">VOICE + MAC PEEK</text>
+  </g>
+</svg>
