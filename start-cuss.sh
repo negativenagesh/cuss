@@ -10,7 +10,7 @@ LOG_FILE="/tmp/cuss-bridge.log"
 if [[ "${1:-}" == "--install-service" ]]; then
   mkdir -p "$HOME/Library/LaunchAgents"
   NODE_BIN="$(command -v node)"
-  NPX_BIN="$(command -v npx)"
+  NODE_DIR="$(dirname "$NODE_BIN")"
   cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -20,11 +20,16 @@ if [[ "${1:-}" == "--install-service" ]]; then
   <string>com.cuss.bridge</string>
   <key>WorkingDirectory</key>
   <string>$BRIDGE_DIR</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$NODE_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>ProgramArguments</key>
   <array>
-    <string>$NPX_BIN</string>
-    <string>tsx</string>
-    <string>src/main.ts</string>
+    <string>$NODE_BIN</string>
+    <string>$BRIDGE_DIR/node_modules/.bin/tsx</string>
+    <string>$BRIDGE_DIR/src/main.ts</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -37,6 +42,7 @@ if [[ "${1:-}" == "--install-service" ]]; then
 </dict>
 </plist>
 EOF
+  /usr/sbin/lsof -ti :4040 | xargs kill -9 2>/dev/null || true
   launchctl unload "$PLIST_PATH" 2>/dev/null || true
   launchctl load "$PLIST_PATH"
   echo "✓ Installed macOS background service (com.cuss.bridge). The CUSS Mac Bridge now runs automatically in the background!"
@@ -64,14 +70,11 @@ if [[ ! -d "$MOBILE_DIR/node_modules" ]]; then
   (cd "$MOBILE_DIR" && npm install)
 fi
 
-# Start or reuse Mac Bridge on port 4040 in the background
-if ! curl -s http://127.0.0.1:4040/api/health >/dev/null 2>&1; then
-  echo "→ Starting CUSS Mac Bridge on port 4040..."
-  (cd "$BRIDGE_DIR" && nohup npm start > "$LOG_FILE" 2>&1 &)
-  sleep 2
-else
-  echo "→ CUSS Mac Bridge is already active on port 4040."
-fi
+# Always ensure the latest Mac Bridge is running on port 4040
+/usr/sbin/lsof -ti :4040 | xargs kill -9 2>/dev/null || true
+echo "→ Starting CUSS Mac Bridge on port 4040..."
+(cd "$BRIDGE_DIR" && nohup npm start > "$LOG_FILE" 2>&1 &)
+sleep 2
 
 # Print the Bridge Pairing URL & Token right here so no second terminal is ever needed
 if [[ -f "$LOG_FILE" ]]; then
