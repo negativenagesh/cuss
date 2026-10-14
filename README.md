@@ -98,57 +98,33 @@ You **never** need the `Cursor.app` GUI window open on your Mac to use CUSS from
 
 ---
 
-### Step 1 — One-Time Cursor CLI Login on Your Mac
-Verify that Cursor's headless CLI is logged into your Cursor account (no API key needed):
-
-```bash
-/Applications/Cursor.app/Contents/Resources/app/bin/cursor agent login
-/Applications/Cursor.app/Contents/Resources/app/bin/cursor agent whoami
-```
-
----
-
-### Step 2 — Clone the Repo & Start the Mac Bridge (`bridge/`)
-Open a terminal on your Mac:
+### Step 1 — One-Command Launch (Zero Multiple Terminals!)
+Clone the repo and run **`npm start`** at the root — it automatically installs dependencies, starts the Mac Bridge on port `4040` in the background, prints your pairing details, and launches the **Expo Go** server in the **same single terminal**:
 
 ```bash
 cd ~/Downloads
 git clone https://github.com/negativenagesh/cuss.git
-cd cuss/bridge
+cd cuss
 
-# Install dependencies & run the test suite (31/31 tests)
-npm install
-npm test
-
-# Start the Mac bridge on port 4040
+# Starts BOTH the Mac Bridge (port 4040) and Expo Go in ONE terminal:
 npm start
 ```
 
-When `npm start` launches, your Mac terminal prints:
-- A **QR Code** (`missioncontrol://pair?url=http://<YOUR_MAC_IP>:4040&token=<48_CHAR_HEX_TOKEN>`)
-- Your **LAN URL** (e.g. `http://192.168.1.x:4040`) and **Tailscale URL** (e.g. `http://100.x.y.z:4040`)
-- Your **Pairing Token** (stored safely at `~/.config/mission-control/config.json`)
+*(Optional)* Want the Mac Bridge to run permanently in the background on macOS login without any terminal open?
+```bash
+npm run service:install
+```
 
 ---
 
-### Step 3 — Launch the Mobile App in Expo Go (`mobile/`)
-Open a **second terminal** on your Mac:
-
-```bash
-cd ~/Downloads/cuss/mobile
-
-# Install dependencies
-npm install
-
-# Start the Expo development server (use --tunnel if on different networks)
-npx expo start -c
-```
-
-1. Open **Expo Go** on your Android phone and scan the **Expo QR code** from the second terminal.
-2. Once CUSS loads on your phone, either:
-   - Scan the **Bridge Pairing QR Code** from the first terminal, **OR**
-   - Tap **ENTER IP & TOKEN MANUALLY** and enter `http://<YOUR_MAC_IP>:4040` and your pairing token.
-3. You will land on the centered **CUSS Studio Landing Screen** — tap **`EXPLORE CUSS`** to enter your live sessions deck!
+### Step 2 — Pair & Sign In to Cursor Directly from Your Android Phone
+1. Open **Expo Go** on your Android phone and scan the **Expo QR code** printed by `npm start`.
+2. Pair with your Mac Bridge (scan the Bridge QR or enter `http://<YOUR_MAC_IP>:4040` + pairing token printed above the Expo QR).
+3. **First-Time Cursor Sign-In on Phone (`LandingScreen`)**:
+   - On your first visit, CUSS displays **`SIGN IN TO CURSOR TO CONTINUE`**.
+   - Tapping it triggers `NO_OPEN_BROWSER=1 cursor agent login` on the Mac bridge, returns the official Cursor OAuth link (`https://cursor.com/loginDeepControl?...`), and opens it directly in your phone's browser (**Chrome / Brave**).
+   - Once you approve login on your phone, CUSS automatically detects the completed session, saves your signed-in state on the Android device, and unlocks **`EXPLORE CUSS`**.
+   - Subsequent app launches go straight to **`EXPLORE CUSS`** (with a **`SIGN OUT`** button available anytime in the header).
 
 ---
 
