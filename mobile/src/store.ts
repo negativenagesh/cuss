@@ -268,6 +268,7 @@ interface DeviceStateSnapshot {
   agents?: Agent[];
   projects?: ProjectEntry[];
   accountEmail?: string | null;
+  cursorSignedIn?: boolean;
   deletedChatIds?: string[];
 }
 
@@ -348,6 +349,7 @@ interface State {
   projects: ProjectEntry[];
   ideState: CursorIdeState | null;
   accountEmail: string | null;
+  cursorSignedIn: boolean;
   selectedMode: ExecutionMode;
   selectedModel: string;
   selectedEffort: string;
@@ -357,6 +359,7 @@ interface State {
   hydrated: boolean;
   setPairing: (url: string, token: string) => Promise<void>;
   clearPairing: () => Promise<void>;
+  setCursorSignedIn: (signedIn: boolean, email?: string | null) => Promise<void>;
   hydrate: () => Promise<void>;
   setAgents: (agents: Agent[]) => void;
   setLocalAgents: (agents: LocalAgent[]) => void;
@@ -385,6 +388,7 @@ export const useStore = create<State>((set, get) => ({
   projects: [],
   ideState: null,
   accountEmail: null,
+  cursorSignedIn: false,
   selectedMode: 'agent',
   selectedModel: 'auto',
   selectedEffort: 'auto',
@@ -402,10 +406,22 @@ export const useStore = create<State>((set, get) => ({
     await SecureStore.deleteItemAsync('pairingToken');
     set({ bridgeUrl: null, token: null });
   },
+  async setCursorSignedIn(signedIn, email) {
+    const nextEmail = signedIn ? (email ?? get().accountEmail) : null;
+    if (signedIn) {
+      await SecureStore.setItemAsync('cursorSignedIn', '1');
+    } else {
+      await SecureStore.deleteItemAsync('cursorSignedIn');
+    }
+    writeDeviceStateSnapshot({ cursorSignedIn: signedIn, accountEmail: nextEmail });
+    set({ cursorSignedIn: signedIn, accountEmail: nextEmail });
+  },
   async hydrate() {
     const bridgeUrl = await SecureStore.getItemAsync('bridgeUrl');
     const token = await SecureStore.getItemAsync('pairingToken');
+    const secureSigned = await SecureStore.getItemAsync('cursorSignedIn');
     const snap = readDeviceStateSnapshot();
+    const cursorSignedIn = secureSigned === '1' || Boolean(snap.cursorSignedIn);
     set({
       bridgeUrl,
       token,
@@ -413,6 +429,7 @@ export const useStore = create<State>((set, get) => ({
       agents: Array.isArray(snap.agents) ? snap.agents : [],
       projects: Array.isArray(snap.projects) ? snap.projects : [],
       accountEmail: snap.accountEmail ?? null,
+      cursorSignedIn,
       deletedChatIds: Array.isArray(snap.deletedChatIds) ? snap.deletedChatIds : [],
       hydrated: true,
     });
