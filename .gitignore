@@ -1,0 +1,41 @@
+# Node / bridge / mobile
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.vitest-cache/
+.vite/
+*.tsbuildinfo
+
+# Expo & React Native
+.expo/
+**/.expo/
+.expo-shared/
+web-build/
+android/
+ios/
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+*.orig.*
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Secrets, REA captures & local state (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+captures/
+exported-scripts/
+
+# Bridge pairing token lives in ~/.config/mission-control (outside repo) — never copy it here.
