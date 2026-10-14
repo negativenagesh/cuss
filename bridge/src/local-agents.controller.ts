@@ -51,6 +51,21 @@ export class LocalAgentsController {
     };
   }
 
+  @Get('auth/status')
+  async authStatus() {
+    return await this.local.getAuthStatus();
+  }
+
+  @Post('auth/login')
+  async authLogin(@Body() body?: { forceBrowser?: boolean }) {
+    return await this.local.startMobileLogin(Boolean(body?.forceBrowser));
+  }
+
+  @Post('auth/logout')
+  async authLogout() {
+    return await this.local.logoutCursor();
+  }
+
   @Post('sync-ide')
   syncIde() {
     const agents = this.local.syncIdeTranscripts(4);
