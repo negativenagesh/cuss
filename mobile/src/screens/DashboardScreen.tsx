@@ -37,6 +37,7 @@ import {
 } from '../components/CussArt';
 import {
   listAgents,
+  localAuthLogout,
   localDelete,
   localIdeState,
   localList,
@@ -93,6 +94,7 @@ export default function DashboardScreen({ navigation }: any) {
     setIdeState,
     setModelCatalog,
     setProjects,
+    setCursorSignedIn,
     clearPairing,
   } = useStore();
   const [mode, setMode] = useState<SurfaceMode>('mac');
@@ -141,10 +143,37 @@ export default function DashboardScreen({ navigation }: any) {
   useEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <SpringButton onPress={clearPairing} hitSlop={12} style={styles.unlinkBtn}>
-          <Unplug size={13} color={COLORS.magenta} />
-          <Text style={styles.unlinkText}>UNLINK</Text>
-        </SpringButton>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <SpringButton
+            onPress={() => {
+              Alert.alert(
+                'Sign Out of Cursor',
+                'Sign out of your Cursor account?',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Sign Out',
+                    style: 'destructive',
+                    onPress: async () => {
+                      await setCursorSignedIn(false, null);
+                      localAuthLogout().catch(() => {});
+                      navigation.navigate('Landing');
+                    },
+                  },
+                ],
+              );
+            }}
+            hitSlop={10}
+            style={[styles.unlinkBtn, { borderColor: COLORS.amber }]}
+          >
+            <X size={12} color={COLORS.amber} />
+            <Text style={[styles.unlinkText, { color: COLORS.amber }]}>SIGN OUT</Text>
+          </SpringButton>
+          <SpringButton onPress={clearPairing} hitSlop={12} style={styles.unlinkBtn}>
+            <Unplug size={13} color={COLORS.magenta} />
+            <Text style={styles.unlinkText}>UNLINK</Text>
+          </SpringButton>
+        </View>
       ),
     });
   }, [navigation]);

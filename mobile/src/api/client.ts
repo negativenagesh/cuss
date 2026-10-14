@@ -69,6 +69,26 @@ export const localList = (syncIde = false) =>
     `/api/local/agents${syncIde ? '?sync=1' : ''}`,
   );
 
+export interface CursorAuthStatus {
+  loggedIn: boolean;
+  email?: string;
+  displayName?: string;
+  loginInProgress: boolean;
+  loginUrl?: string;
+}
+
+export const localAuthStatus = () => api<CursorAuthStatus>('/api/local/auth/status');
+
+export const localAuthLogin = (forceBrowser = false) =>
+  api<CursorAuthStatus>('/api/local/auth/login', {
+    method: 'POST',
+    body: { forceBrowser },
+    timeoutMs: 15_000,
+  });
+
+export const localAuthLogout = () =>
+  api<{ loggedOut: boolean }>('/api/local/auth/logout', { method: 'POST' });
+
 export const localSyncIde = () =>
   api<{ agents: any[] }>('/api/local/sync-ide', { method: 'POST' });
 
