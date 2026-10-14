@@ -1,0 +1,13 @@
+{
+  "name": "cuss-studio",
+  "version": "0.5.0",
+  "private": true,
+  "description": "CUSS (Cybernetic Umbilical Studio & Synth) — One-command launcher for Mac Cursor Bridge + Expo Go Mobile Deck",
+  "scripts": {
+    "start": "bash ./start-cuss.sh",
+    "tunnel": "bash ./start-cuss.sh --tunnel",
+    "service:install": "bash ./start-cuss.sh --install-service",
+    "service:uninstall": "bash ./start-cuss.sh --uninstall-service",
+    "test": "npm --prefix bridge test && npx --prefix bridge tsc --noEmit && npx --prefix mobile tsc --noEmit"
+  }
+}
