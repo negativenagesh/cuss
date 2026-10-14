@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "CUSS",
+    "slug": "cuss",
+    "version": "0.3.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "missioncontrol",
+    "backgroundColor": "#07070C",
+    "android": {
+      "package": "com.local.cuss",
+      "softwareKeyboardLayoutMode": "resize"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.local.cuss"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow CUSS to scan the Mac bridge pairing QR reticle."
+        }
+      ],
+      "expo-secure-store",
+      "expo-asset",
+      "expo-font",
+      "expo-audio"
+    ]
+  }
+}
