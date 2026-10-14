@@ -112,6 +112,8 @@ export class LocalAgentService extends EventEmitter {
   private queues = new Map<string, QueuedTurn[]>();
   private recentEvents = new Map<string, RunEvent[]>();
   private cachedModels: { at: number; families: ModelFamily[]; rawModels: { slug: string; label: string }[] } | null = null;
+  private loginProc: ChildProcess | null = null;
+  private currentLoginUrl: string | undefined;
   private static readonly EVENT_BUFFER = 250;
 
   /**
@@ -269,6 +271,196 @@ export class LocalAgentService extends EventEmitter {
     } catch {
       return {};
     }
+  }
+
+  /**
+   * Check live Cursor CLI authentication status (`~/.cursor/cli-config.json` + `cursor agent status`).
+   */
+  async getAuthStatus(): Promise<{
+    loggedIn: boolean;
+    email?: string;
+    displayName?: string;
+    loginInProgress: boolean;
+    loginUrl?: string;
+  }> {
+    const info = this.getAccountInfo();
+    if (info.email && !this.loginProc) {
+      return {
+        loggedIn: true,
+        email: info.email,
+        displayName: info.displayName,
+        loginInProgress: false,
+      };
+    }
+
+    if (this.loginProc) {
+      // Check if cli-config.json just got populated while loginProc was finishing
+      if (info.email) {
+        return {
+          loggedIn: true,
+          email: info.email,
+          displayName: info.displayName,
+          loginInProgress: false,
+        };
+      }
+      return {
+        loggedIn: false,
+        loginInProgress: true,
+        loginUrl: this.currentLoginUrl,
+      };
+    }
+
+    // Fallback check via `cursor agent status`
+    try {
+      const out = await this.exec([...this.cmd('status')], homedir());
+      const clean = out.replace(/\x1b\[[0-9;]*m/g, '');
+      const m = /Logged in as\s+([^\s\r\n]+)/i.exec(clean);
+      if (m) {
+        return {
+          loggedIn: true,
+          email: m[1].trim(),
+          loginInProgress: false,
+        };
+      }
+    } catch {
+      /* not logged in */
+    }
+    return {
+      loggedIn: false,
+      loginInProgress: false,
+    };
+  }
+
+  /**
+   * Spawn `NO_OPEN_BROWSER=1 cursor agent login` in the background on the Mac,
+   * capture the `https://cursor.com/loginDeepControl?...` OAuth URL within ~500ms,
+   * and return it so the Android phone can open it in Chrome/Brave and complete sign-in!
+   */
+  async startMobileLogin(forceBrowser = false): Promise<{
+    loggedIn: boolean;
+    email?: string;
+    displayName?: string;
+    loginInProgress: boolean;
+    loginUrl?: string;
+  }> {
+    const existing = this.getAccountInfo();
+    if (existing.email && !forceBrowser) {
+      return {
+        loggedIn: true,
+        email: existing.email,
+        displayName: existing.displayName,
+        loginInProgress: false,
+      };
+    }
+
+    if (this.loginProc && this.currentLoginUrl) {
+      return {
+        loggedIn: false,
+        loginInProgress: true,
+        loginUrl: this.currentLoginUrl,
+      };
+    }
+
+    try {
+      this.loginProc?.kill('SIGTERM');
+    } catch {
+      /* ignore */
+    }
+    this.loginProc = null;
+    this.currentLoginUrl = undefined;
+
+    return await new Promise((resolve) => {
+      const child = spawn(this.cliPath, ['agent', 'login'], {
+        cwd: homedir(),
+        env: { ...CHILD_ENV, NO_OPEN_BROWSER: '1', FORCE_COLOR: '0' },
+      });
+      this.loginProc = child;
+      let buf = '';
+      let resolved = false;
+
+      const finishResolve = (payload: {
+        loggedIn: boolean;
+        email?: string;
+        displayName?: string;
+        loginInProgress: boolean;
+        loginUrl?: string;
+      }) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(waitTimer);
+        resolve(payload);
+      };
+
+      const checkChunk = (chunk: Buffer) => {
+        buf += chunk.toString('utf8').replace(/\x1b\[[0-9;]*m/g, '');
+        const urlMatch = /https:\/\/cursor\.com\/[^\s"'<>)\r\n]+/i.exec(buf);
+        if (urlMatch) {
+          this.currentLoginUrl = urlMatch[0].trim();
+          finishResolve({
+            loggedIn: false,
+            loginInProgress: true,
+            loginUrl: this.currentLoginUrl,
+          });
+        }
+      };
+
+      child.stdout.on('data', checkChunk);
+      child.stderr.on('data', checkChunk);
+
+      child.on('exit', () => {
+        this.loginProc = null;
+        this.currentLoginUrl = undefined;
+        this.cachedModels = null;
+        const after = this.getAccountInfo();
+        finishResolve({
+          loggedIn: Boolean(after.email),
+          email: after.email,
+          displayName: after.displayName,
+          loginInProgress: false,
+        });
+      });
+
+      child.on('error', () => {
+        this.loginProc = null;
+        this.currentLoginUrl = undefined;
+        finishResolve({
+          loggedIn: Boolean(existing.email),
+          email: existing.email,
+          displayName: existing.displayName,
+          loginInProgress: false,
+        });
+      });
+
+      const waitTimer = setTimeout(() => {
+        finishResolve({
+          loggedIn: Boolean(existing.email),
+          email: existing.email,
+          displayName: existing.displayName,
+          loginInProgress: Boolean(this.loginProc),
+          loginUrl: this.currentLoginUrl,
+        });
+      }, 4500);
+    });
+  }
+
+  /**
+   * Sign out of Cursor CLI on the Mac (`cursor agent logout`) and clear stored auth tokens.
+   */
+  async logoutCursor(): Promise<{ loggedOut: boolean }> {
+    try {
+      this.loginProc?.kill('SIGTERM');
+    } catch {
+      /* ignore */
+    }
+    this.loginProc = null;
+    this.currentLoginUrl = undefined;
+    this.cachedModels = null;
+    try {
+      await this.exec([...this.cmd('logout')], homedir());
+    } catch {
+      /* ignore if already logged out */
+    }
+    return { loggedOut: true };
   }
 
   /** Query `cursor agent --list-models` on the Mac (cached 5 min) + group into families with options. */
