@@ -7,7 +7,8 @@ export type LiveMessage =
   | { type: 'run:final'; agentId: string; runId: string; run: any }
   | { type: 'local:update'; agents: any[] }
   | { type: 'local:event'; agentId: string; raw: any; at: string }
-  | { type: 'mirror:frame'; frame: any };
+  | { type: 'mirror:frame'; frame: any }
+  | { type: 'mirror:input:ack'; id?: number; ok: boolean; detail?: string };
 
 /** WebSocket to the bridge with auto-reconnect (SPEC.md §4). */
 export class LiveSocket {
@@ -40,6 +41,10 @@ export class LiveSocket {
       const delay = Math.min(1000 * 2 ** this.retry++, 15000);
       setTimeout(() => this.connect(), delay);
     };
+  }
+
+  isOpen() {
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 
   send(msg: object) {

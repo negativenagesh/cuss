@@ -51,6 +51,20 @@
       <p>All chat sessions and full message transcripts persist locally on your Android device via <code>expo-file-system</code>. Built with 100% custom display typography (<b>LC Mogi</b>, <b>Unbounded</b>, <b>Syne</b>, <b>Space Grotesk</b>, <b>Space Mono</b>) and 3-layer choreography.</p>
     </td>
   </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <h3>⌨️ 07 // Live Remote Keyboard (Phone → Any Mac Window)</h3>
+      <p>Open <b>MAC LIVE MIRROR</b>, tap any text field on the mirrored screen (Cursor chat, Google search, Slack, Terminal…), and start typing on your phone: every keystroke lands <b>live</b> in that Mac window within ~5ms over WebSocket (<code>mirror:input</code> → persistent native <code>CGEvent</code> daemon with full Unicode/emoji, backspace mirroring, and <b>Enter = real Return key</b> so it submits exactly like a physical keyboard).</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>🖱️ 08 // Touch-to-Control Mac Mirror</h3>
+      <p>Flicker-free double-buffered live Mac display stream with <b>click / double-click / right-click / move / scroll</b> on touch, plus a 20-key shortcut bar (<code>Cmd+A/C/V/Z/S/L/K</code>, <code>Cmd+Tab</code>, <code>Cmd+Space</code>, arrows, <code>Shift+Enter</code>) and a launcher for every running &amp; installed Mac app.</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3>⚡ 09 // Zero-Terminal Mac Menu Bar</h3>
+      <p>Native <code>/Applications/CUSS Menu.app</code> (<b>⚡ CUSS</b> in the top menu bar) keeps the Bridge (<code>4040</code>) and Expo Go server (<code>8081</code>) alive as macOS LaunchAgents, shows a scannable Expo QR code HUD, and syncs your Cursor Desktop login into <code>~/.cursor/auth.json</code> automatically.</p>
+    </td>
+  </tr>
 </table>
 
 ---

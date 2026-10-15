@@ -852,9 +852,9 @@ export class LocalAgentService extends EventEmitter {
    * so touch events on the Android Live Mirror execute mouse clicks/scrolls in <10ms.
    */
   private async ensureMacInputBinary(): Promise<string> {
-    const binPath = '/tmp/cuss-mac-input';
+    const binPath = '/tmp/cuss-mac-input-v2';
     if (existsSync(binPath)) return binPath;
-    const swiftPath = '/tmp/cuss-mac-input.swift';
+    const swiftPath = '/tmp/cuss-mac-input-v2.swift';
     const swiftSrc = `
 import Foundation
 import CoreGraphics
@@ -863,9 +863,86 @@ let args = CommandLine.arguments
 let displayId = CGMainDisplayID()
 let width = Double(CGDisplayPixelsWide(displayId))
 let height = Double(CGDisplayPixelsHigh(displayId))
+let eventSource = CGEventSource(stateID: .combinedSessionState)
 
 if args.count < 2 || args[1] == "info" {
     print("\\(Int(width))x\\(Int(height))")
+    exit(0)
+}
+
+/// Type arbitrary Unicode text into the focused Mac window (Cursor, Chrome, Slack, Terminal, ...).
+/// Newlines become a real Return key press so Enter submits forms/chats exactly like a physical keyboard.
+func typeUnicode(_ text: String) {
+    for ch in text {
+        if ch == "\\n" || ch == "\\r" {
+            pressKey(36, flags: [])
+            continue
+        }
+        if ch == "\\t" {
+            pressKey(48, flags: [])
+            continue
+        }
+        var units = Array(String(ch).utf16)
+        if let down = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: true),
+           let up = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: false) {
+            down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+            up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+            usleep(1200)
+        }
+    }
+}
+
+func pressKey(_ code: CGKeyCode, flags: CGEventFlags) {
+    if let down = CGEvent(keyboardEventSource: eventSource, virtualKey: code, keyDown: true),
+       let up = CGEvent(keyboardEventSource: eventSource, virtualKey: code, keyDown: false) {
+        down.flags = flags
+        up.flags = flags
+        down.post(tap: .cghidEventTap)
+        usleep(6000)
+        up.post(tap: .cghidEventTap)
+        usleep(4000)
+    }
+}
+
+func parseFlags(_ s: String) -> CGEventFlags {
+    var f: CGEventFlags = []
+    for part in s.lowercased().split(separator: ",") {
+        switch part {
+        case "cmd", "command": f.insert(.maskCommand)
+        case "shift": f.insert(.maskShift)
+        case "alt", "option": f.insert(.maskAlternate)
+        case "ctrl", "control": f.insert(.maskControl)
+        default: break
+        }
+    }
+    return f
+}
+
+/// Persistent daemon: reads one command per line from stdin so every phone keystroke lands in ~1ms.
+///   type <base64-utf8>        key <keycode> [cmd,shift,alt,ctrl]        backspace <count>
+if args[1] == "daemon" {
+    setvbuf(stdout, nil, _IOLBF, 0)
+    while let line = readLine() {
+        let parts = line.split(separator: " ", maxSplits: 2).map(String.init)
+        guard let cmd = parts.first else { continue }
+        if cmd == "type", parts.count >= 2, let data = Data(base64Encoded: parts[1]), let text = String(data: data, encoding: .utf8) {
+            typeUnicode(text)
+            print("OK type \\(text.count)")
+        } else if cmd == "key", parts.count >= 2, let code = UInt16(parts[1]) {
+            pressKey(CGKeyCode(code), flags: parts.count >= 3 ? parseFlags(parts[2]) : [])
+            print("OK key \\(code)")
+        } else if cmd == "backspace" {
+            let n = parts.count >= 2 ? (Int(parts[1]) ?? 1) : 1
+            for _ in 0..<max(1, min(n, 500)) { pressKey(51, flags: []) }
+            print("OK backspace \\(n)")
+        } else if cmd == "ping" {
+            print("PONG")
+        } else {
+            print("ERR unknown")
+        }
+    }
     exit(0)
 }
 
@@ -920,6 +997,54 @@ if (mode == "click" || mode == "doubleclick" || mode == "rightclick" || mode == 
       p.on('exit', () => resolve());
     });
     return binPath;
+  }
+
+  /** Long-lived native keyboard daemon (`/tmp/cuss-mac-input-v2 daemon`) + strictly ordered input queue. */
+  private macInputDaemon: ChildProcess | null = null;
+  private macInputChain: Promise<unknown> = Promise.resolve();
+
+  private async ensureMacInputDaemon(): Promise<ChildProcess | null> {
+    if (this.macInputDaemon && !this.macInputDaemon.killed && this.macInputDaemon.exitCode === null) {
+      return this.macInputDaemon;
+    }
+    const bin = await this.ensureMacInputBinary();
+    if (!existsSync(bin)) return null;
+    const p = spawn(bin, ['daemon'], { env: RUN_ENV, stdio: ['pipe', 'pipe', 'ignore'] });
+    p.on('exit', () => {
+      if (this.macInputDaemon === p) this.macInputDaemon = null;
+    });
+    p.on('error', () => {
+      if (this.macInputDaemon === p) this.macInputDaemon = null;
+    });
+    this.macInputDaemon = p;
+    return p;
+  }
+
+  /**
+   * Send one keyboard command line to the native daemon. Calls are serialized so rapid phone
+   * keystrokes always land on the Mac in the exact order they were typed.
+   */
+  private macInput(line: string): Promise<boolean> {
+    const run = async () => {
+      const d = await this.ensureMacInputDaemon();
+      if (!d?.stdin?.writable) return false;
+      return await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          d.stdout?.off('data', onData);
+          resolve(true);
+        }, 1500);
+        const onData = () => {
+          clearTimeout(timer);
+          d.stdout?.off('data', onData);
+          resolve(true);
+        };
+        d.stdout?.once('data', onData);
+        d.stdin!.write(line + '\n');
+      });
+    };
+    const next = this.macInputChain.then(run, run);
+    this.macInputChain = next.catch(() => {});
+    return next;
   }
 
   /**
@@ -1128,12 +1253,14 @@ return appName & "|||" & winTitle & "|||" & openStr
       | 'rightclick'
       | 'move'
       | 'scroll'
-      | 'type-text';
+      | 'type-text'
+      | 'backspace';
     target?: string;
     x?: number;
     y?: number;
     deltaY?: number;
     text?: string;
+    count?: number;
   }): Promise<{ ok: boolean; detail?: string }> {
     if (action.type === 'focus-app' && action.target) {
       const appName = action.target.trim();
@@ -1179,14 +1306,68 @@ return appName & "|||" & winTitle & "|||" & openStr
     }
 
     if (action.type === 'type-text' && action.text) {
-      const safe = JSON.stringify(action.text);
-      await this.execOsascript(`tell application "System Events" to keystroke ${safe}`).catch(
-        () => {},
-      );
-      return { ok: true, detail: 'Typed text' };
+      const ok = await this.macInput(`type ${Buffer.from(action.text, 'utf8').toString('base64')}`);
+      if (!ok) {
+        const safe = JSON.stringify(action.text);
+        await this.execOsascript(`tell application "System Events" to keystroke ${safe}`).catch(() => {});
+      }
+      return { ok: true, detail: `Typed ${action.text.length} chars` };
+    }
+
+    if (action.type === 'backspace') {
+      const n = Math.max(1, Math.min(500, Math.round(Number(action.count ?? 1))));
+      await this.macInput(`backspace ${n}`);
+      return { ok: true, detail: `Backspace x${n}` };
     }
 
     if (action.type === 'send-key' && action.target) {
+      // Native CGEvent key codes (fast daemon path). Format: [keycode, modifiers]
+      const nativeKeys: Record<string, [number, string]> = {
+        enter: [36, ''],
+        return: [36, ''],
+        escape: [53, ''],
+        esc: [53, ''],
+        space: [49, ''],
+        tab: [48, ''],
+        backspace: [51, ''],
+        delete: [117, ''],
+        up: [126, ''],
+        down: [125, ''],
+        left: [123, ''],
+        right: [124, ''],
+        home: [115, ''],
+        end: [119, ''],
+        pageup: [116, ''],
+        pagedown: [121, ''],
+        'shift+enter': [36, 'shift'],
+        'cmd+enter': [36, 'cmd'],
+        reload: [15, 'cmd'],
+        'cmd+r': [15, 'cmd'],
+        'cmd+a': [0, 'cmd'],
+        'cmd+c': [8, 'cmd'],
+        'cmd+v': [9, 'cmd'],
+        'cmd+x': [7, 'cmd'],
+        'cmd+z': [6, 'cmd'],
+        'cmd+shift+z': [6, 'cmd,shift'],
+        'cmd+s': [1, 'cmd'],
+        'cmd+w': [13, 'cmd'],
+        'cmd+t': [17, 'cmd'],
+        'cmd+l': [37, 'cmd'],
+        'cmd+f': [3, 'cmd'],
+        'cmd+k': [40, 'cmd'],
+        'cmd+i': [34, 'cmd'],
+        'cmd+tab': [48, 'cmd'],
+        'cmd+space': [49, 'cmd'],
+        'cmd+shift+p': [35, 'cmd,shift'],
+        'ctrl+c': [8, 'ctrl'],
+        'alt+backspace': [51, 'alt'],
+        'cmd+backspace': [51, 'cmd'],
+      };
+      const native = nativeKeys[action.target.toLowerCase()];
+      if (native) {
+        const ok = await this.macInput(`key ${native[0]}${native[1] ? ` ${native[1]}` : ''}`);
+        if (ok) return { ok: true, detail: `Sent ${action.target}` };
+      }
       const keyMap: Record<string, string> = {
         enter: 'key code 36',
         escape: 'key code 53',

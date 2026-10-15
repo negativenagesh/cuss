@@ -255,12 +255,14 @@ export const localMacAction = (body: {
     | 'rightclick'
     | 'move'
     | 'scroll'
-    | 'type-text';
+    | 'type-text'
+    | 'backspace';
   target?: string;
   x?: number;
   y?: number;
   deltaY?: number;
   text?: string;
+  count?: number;
 }) =>
   api<{ ok: boolean; detail?: string }>('/api/local/mac-action', {
     method: 'POST',

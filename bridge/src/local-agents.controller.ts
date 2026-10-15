@@ -163,12 +163,14 @@ export class LocalAgentsController {
         | 'rightclick'
         | 'move'
         | 'scroll'
-        | 'type-text';
+        | 'type-text'
+        | 'backspace';
       target?: string;
       x?: number;
       y?: number;
       deltaY?: number;
       text?: string;
+      count?: number;
     },
   ) {
     if (!body?.type) {

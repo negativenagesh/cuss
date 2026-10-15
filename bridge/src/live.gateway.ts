@@ -90,6 +90,15 @@ export class LiveGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return void this.startMirror(client, msg?.agentId);
       case 'mirror:unsubscribe':
         return this.stopMirror(client);
+      case 'mirror:input':
+        // Low-latency remote keyboard/mouse path: {type:'mirror:input', id?, action:{type:'type-text'|'send-key'|'backspace'|...}}
+        if (msg?.action?.type) {
+          void this.local
+            .performMacAction(msg.action)
+            .then((res) => this.send(client, { type: 'mirror:input:ack', id: msg.id, ...res }))
+            .catch(() => this.send(client, { type: 'mirror:input:ack', id: msg.id, ok: false }));
+        }
+        return;
     }
   }
 

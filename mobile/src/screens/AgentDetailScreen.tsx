@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -35,6 +35,7 @@ import {
   FolderGit2,
   GitBranch,
   Globe,
+  Keyboard as KeyboardIcon,
   Laptop,
   ModeVectorIcon,
   Plus,
@@ -433,8 +434,12 @@ export default function AgentDetailScreen({ route, navigation }: any) {
   const [mirrorTouchMode, setMirrorTouchMode] = useState<'click' | 'doubleclick' | 'rightclick' | 'move'>('click');
   const [showAllMacApps, setShowAllMacApps] = useState(false);
   const [macKeyText, setMacKeyText] = useState('');
+  const [liveKeyboard, setLiveKeyboard] = useState(true);
+  const [liveKeyCount, setLiveKeyCount] = useState(0);
+  const liveKeyPrevRef = useRef('');
   const [lastTouchStatus, setLastTouchStatus] = useState<string>('');
   const [peekData, setPeekData] = useState<MacMirrorFrame | null>(null);
+
 
   // Rename Chat modal state
   const [renameModalOpen, setRenameModalOpen] = useState(false);
@@ -442,6 +447,57 @@ export default function AgentDetailScreen({ route, navigation }: any) {
 
   const listRef = useRef<FlatList<StreamItem>>(null);
   const liveRef = useRef<LiveSocket | null>(null);
+
+  /**
+   * LIVE KEYBOARD: fire a Mac input action over the WebSocket fast path (~5ms) and fall back
+   * to the HTTP `/api/local/mac-action` endpoint whenever the socket is not open.
+   */
+  const sendMacInput = useCallback(
+    (action: Parameters<typeof localMacAction>[0]) => {
+      const live = liveRef.current;
+      if (live?.isOpen()) {
+        live.send({ type: 'mirror:input', id: Date.now(), action });
+        return;
+      }
+      void localMacAction(action).catch(() => {});
+    },
+    [],
+  );
+
+  /** Diff previous vs next composer text and mirror only the delta as real keystrokes on the Mac. */
+  const onLiveKeyboardChange = useCallback(
+    (next: string) => {
+      setMacKeyText(next);
+      if (!liveKeyboard) return;
+      const prev = liveKeyPrevRef.current;
+      liveKeyPrevRef.current = next;
+      if (next === prev) return;
+      let p = 0;
+      const max = Math.min(prev.length, next.length);
+      while (p < max && prev.charCodeAt(p) === next.charCodeAt(p)) p++;
+      const removed = prev.length - p;
+      const added = next.slice(p);
+      if (removed > 0) sendMacInput({ type: 'backspace', count: removed });
+      if (added.length > 0) sendMacInput({ type: 'type-text', text: added });
+      setLiveKeyCount((c) => c + removed + added.length);
+    },
+    [liveKeyboard, sendMacInput],
+  );
+
+  /** Enter on the phone keyboard = real Return key on the Mac (submits chat/search/form) and clears local buffer. */
+  const onLiveKeyboardSubmit = useCallback(() => {
+    if (liveKeyboard) {
+      sendMacInput({ type: 'send-key', target: 'enter' });
+      liveKeyPrevRef.current = '';
+      setMacKeyText('');
+      setLiveKeyCount((c) => c + 1);
+      return;
+    }
+    const txt = macKeyText;
+    if (!txt) return;
+    setMacKeyText('');
+    sendMacInput({ type: 'type-text', text: txt + '\n' });
+  }, [liveKeyboard, macKeyText, sendMacInput]);
   const seqRef = useRef(Date.now());
   const receivedAnyRef = useRef(false);
   const firstServerEventRef = useRef(true);
@@ -1987,28 +2043,65 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                     </View>
                   </ScrollView>
 
-                  {/* Remote Mac Keyboard & Shortcut Bar */}
-                  <View style={styles.gitActionRow}>
-                    <TextInput
-                      style={styles.gitInput}
-                      placeholder="Type text onto active Mac window…"
-                      placeholderTextColor={COLORS.dim}
-                      value={macKeyText}
-                      onChangeText={setMacKeyText}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
+                  {/* Remote Mac Keyboard: LIVE mode mirrors every keystroke instantly into the focused Mac window */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                      <KeyboardIcon size={12} color={liveKeyboard ? COLORS.lime : COLORS.dim} />
+                      <Text
+                        numberOfLines={1}
+                        style={[styles.branchChipText, { fontSize: 9.5, color: liveKeyboard ? COLORS.lime : COLORS.dim, flex: 1 }]}
+                      >
+                        {liveKeyboard ? 'LIVE KEYBOARD' : 'BATCH TYPE'} → {peekData?.frontApp || 'MAC'}
+                        {liveKeyCount > 0 ? ` · ${liveKeyCount} KEYS` : ''}
+                      </Text>
+                    </View>
                     <SpringButton
-                      style={styles.gitMiniBtn}
-                      disabled={!macKeyText}
+                      style={[
+                        styles.branchChip,
+                        liveKeyboard && { borderColor: COLORS.lime, backgroundColor: COLORS.limeDim },
+                      ]}
                       onPress={() => {
-                        const txt = macKeyText;
-                        setMacKeyText('');
-                        void localMacAction({ type: 'type-text', text: txt });
+                        liveKeyPrevRef.current = macKeyText;
+                        setLiveKeyboard((v) => !v);
                       }}
                     >
+                      <Text style={[styles.branchChipText, { fontSize: 9.5, color: liveKeyboard ? COLORS.lime : COLORS.bone }]}>
+                        {liveKeyboard ? 'LIVE: ON' : 'LIVE: OFF'}
+                      </Text>
+                    </SpringButton>
+                  </View>
+                  <View style={styles.gitActionRow}>
+                    <TextInput
+                      style={[styles.gitInput, liveKeyboard && { borderColor: COLORS.lime }]}
+                      placeholder={
+                        liveKeyboard
+                          ? `Type here → appears live in ${peekData?.frontApp || 'Mac'} · Enter = Return`
+                          : 'Type text, then press TYPE to send to the Mac…'
+                      }
+                      placeholderTextColor={COLORS.dim}
+                      value={macKeyText}
+                      onChangeText={onLiveKeyboardChange}
+                      onSubmitEditing={onLiveKeyboardSubmit}
+                      onKeyPress={(e) => {
+                        // Mirror backspace even when the local buffer is already empty (deleting Mac-side text)
+                        if (liveKeyboard && e.nativeEvent.key === 'Backspace' && macKeyText.length === 0) {
+                          sendMacInput({ type: 'backspace', count: 1 });
+                          setLiveKeyCount((c) => c + 1);
+                        }
+                      }}
+                      blurOnSubmit={false}
+                      returnKeyType="send"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      spellCheck={false}
+                    />
+                    <SpringButton
+                      style={[styles.gitMiniBtn, liveKeyboard && { backgroundColor: COLORS.lime }]}
+                      disabled={!liveKeyboard && !macKeyText}
+                      onPress={onLiveKeyboardSubmit}
+                    >
                       <Send size={12} color={COLORS.bg} />
-                      <Text style={styles.gitMiniBtnText}>TYPE</Text>
+                      <Text style={styles.gitMiniBtnText}>{liveKeyboard ? 'ENTER' : 'TYPE'}</Text>
                     </SpringButton>
                   </View>
 
@@ -2016,18 +2109,30 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                     <View style={{ flexDirection: 'row', gap: 6 }}>
                       {[
                         { label: 'ENTER', key: 'enter' },
+                        { label: 'SHIFT+ENTER', key: 'shift+enter' },
                         { label: 'BACKSPACE', key: 'backspace' },
                         { label: 'TAB', key: 'tab' },
-                        { label: 'SPACE', key: 'space' },
                         { label: 'ESC', key: 'escape' },
+                        { label: 'CMD+A', key: 'cmd+a' },
+                        { label: 'CMD+C', key: 'cmd+c' },
+                        { label: 'CMD+V', key: 'cmd+v' },
+                        { label: 'CMD+Z', key: 'cmd+z' },
+                        { label: 'CMD+S', key: 'cmd+s' },
+                        { label: 'CMD+L', key: 'cmd+l' },
+                        { label: 'CMD+K', key: 'cmd+k' },
                         { label: 'CMD+TAB', key: 'cmd+tab' },
+                        { label: 'CMD+SPACE', key: 'cmd+space' },
                         { label: 'CMD+R', key: 'reload' },
                         { label: 'CMD+W', key: 'cmd+w' },
+                        { label: '↑', key: 'up' },
+                        { label: '↓', key: 'down' },
+                        { label: '←', key: 'left' },
+                        { label: '→', key: 'right' },
                       ].map((k) => (
                         <SpringButton
                           key={k.key}
                           style={styles.branchChip}
-                          onPress={() => void localMacAction({ type: 'send-key', target: k.key })}
+                          onPress={() => sendMacInput({ type: 'send-key', target: k.key })}
                         >
                           <Text style={[styles.branchChipText, { fontSize: 9.5 }]}>{k.label}</Text>
                         </SpringButton>
