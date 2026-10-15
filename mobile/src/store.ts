@@ -1,7 +1,39 @@
 import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
+import Constants from 'expo-constants';
 import { File as ExpoFile, Paths } from 'expo-file-system';
 import type { ExecutionMode } from './theme';
+
+/**
+ * Automatically detect the Mac's current Wi-Fi / LAN IP from Expo Go's hostUri
+ * (e.g. when switching between home Wi-Fi 192.168.1.10 and office Wi-Fi 10.10.0.160).
+ */
+export function detectLiveMacBridgeUrl(): string | null {
+  try {
+    const rawHost =
+      Constants.expoConfig?.hostUri ??
+      (Constants as any).manifest2?.extra?.expoClient?.hostUri ??
+      (Constants as any).manifest?.debuggerHost ??
+      Constants.linkingUri ??
+      '';
+    const cleaned = String(rawHost)
+      .replace(/^[a-zA-Z0-9+.-]+:\/\//, '')
+      .split('/')[0]
+      .split(':')[0]
+      .trim();
+    if (cleaned && /^\d{1,3}(\.\d{1,3}){3}$/.test(cleaned)) {
+      return `http://${cleaned}:4040`;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function isPrivateLanUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  return /^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)/i.test(url.trim());
+}
 
 export interface Agent {
   id: string;
@@ -339,12 +371,19 @@ export function deleteDeviceChatItems(agentId: string) {
   }
 }
 
+export interface AgentCompletionNotice {
+  agent: LocalAgent;
+  status: 'done' | 'error';
+  at: string;
+}
+
 interface State {
   bridgeUrl: string | null;
   token: string | null;
   agents: Agent[];
   localAgents: LocalAgent[];
   deletedChatIds: string[];
+  completionNotice: AgentCompletionNotice | null;
   modelFamilies: ModelFamily[];
   projects: ProjectEntry[];
   ideState: CursorIdeState | null;
@@ -363,6 +402,8 @@ interface State {
   hydrate: () => Promise<void>;
   setAgents: (agents: Agent[]) => void;
   setLocalAgents: (agents: LocalAgent[]) => void;
+  markLocalAgentRunning: (id: string) => void;
+  dismissCompletionNotice: () => void;
   renameLocalAgentOnDevice: (id: string, name: string) => void;
   deleteLocalAgentOnDevice: (id: string) => void;
   setModelCatalog: (families: ModelFamily[], email?: string) => void;
@@ -384,6 +425,7 @@ export const useStore = create<State>((set, get) => ({
   agents: [],
   localAgents: [],
   deletedChatIds: [],
+  completionNotice: null,
   modelFamilies: FALLBACK_FAMILIES,
   projects: [],
   ideState: null,
@@ -417,8 +459,35 @@ export const useStore = create<State>((set, get) => ({
     set({ cursorSignedIn: signedIn, accountEmail: nextEmail });
   },
   async hydrate() {
-    const bridgeUrl = await SecureStore.getItemAsync('bridgeUrl');
-    const token = await SecureStore.getItemAsync('pairingToken');
+    let bridgeUrl = await SecureStore.getItemAsync('bridgeUrl');
+    let token = await SecureStore.getItemAsync('pairingToken');
+    const detectedUrl = detectLiveMacBridgeUrl();
+
+    // If the Mac's Wi-Fi IP changed (e.g. 192.168.1.10 -> 10.10.0.160), auto-switch immediately!
+    if (detectedUrl && (!bridgeUrl || (isPrivateLanUrl(bridgeUrl) && bridgeUrl !== detectedUrl))) {
+      bridgeUrl = detectedUrl;
+      await SecureStore.setItemAsync('bridgeUrl', bridgeUrl);
+    }
+
+    // Auto-pair over same Wi-Fi if token is not yet saved
+    if (bridgeUrl && !token) {
+      try {
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), 2500);
+        const res = await fetch(`${bridgeUrl}/api/auto-pair`, { signal: ac.signal });
+        clearTimeout(t);
+        if (res.ok) {
+          const j = await res.json();
+          if (j?.token) {
+            token = String(j.token);
+            await SecureStore.setItemAsync('pairingToken', token);
+          }
+        }
+      } catch {
+        /* manual or QR pairing remains available */
+      }
+    }
+
     const secureSigned = await SecureStore.getItemAsync('cursorSignedIn');
     const snap = readDeviceStateSnapshot();
     const cursorSignedIn = secureSigned === '1' || Boolean(snap.cursorSignedIn);
@@ -443,6 +512,8 @@ export const useStore = create<State>((set, get) => ({
     const remote = Array.isArray(incoming) ? incoming : [];
     const deleted = new Set(get().deletedChatIds);
     const mergedMap = new Map<string, LocalAgent>();
+    let nextNotice = get().completionNotice;
+
     // Preserve existing device-saved chats first, then overlay newer remote state
     for (const prev of get().localAgents) {
       if (prev?.id && !deleted.has(prev.id)) {
@@ -452,6 +523,17 @@ export const useStore = create<State>((set, get) => ({
     for (const rem of remote) {
       if (rem?.id && !deleted.has(rem.id)) {
         const existing = mergedMap.get(rem.id);
+        if (
+          existing &&
+          (existing.lastStatus === 'running' || existing.lastStatus === 'queued') &&
+          (rem.lastStatus === 'done' || rem.lastStatus === 'error')
+        ) {
+          nextNotice = {
+            agent: { ...existing, ...rem },
+            status: rem.lastStatus,
+            at: new Date().toISOString(),
+          };
+        }
         mergedMap.set(rem.id, existing ? { ...existing, ...rem } : rem);
       }
     }
@@ -459,8 +541,16 @@ export const useStore = create<State>((set, get) => ({
       String(b.lastActivityAt ?? '').localeCompare(String(a.lastActivityAt ?? '')),
     );
     writeDeviceStateSnapshot({ localAgents: merged });
-    set({ localAgents: merged });
+    set({ localAgents: merged, completionNotice: nextNotice });
   },
+  markLocalAgentRunning: (id) => {
+    const next = get().localAgents.map((a) =>
+      a.id === id ? { ...a, lastStatus: 'running' as const, lastActivityAt: new Date().toISOString() } : a,
+    );
+    writeDeviceStateSnapshot({ localAgents: next });
+    set({ localAgents: next });
+  },
+  dismissCompletionNotice: () => set({ completionNotice: null }),
   renameLocalAgentOnDevice: (id, name) => {
     const next = get().localAgents.map((a) => (a.id === id ? { ...a, name } : a));
     writeDeviceStateSnapshot({ localAgents: next });

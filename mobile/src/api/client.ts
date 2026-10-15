@@ -218,6 +218,10 @@ export interface MacMirrorFrame {
   windowTitle?: string;
   browserUrl?: string;
   browserTitle?: string;
+  runningApps?: string[];
+  installedApps?: string[];
+  screenWidth?: number;
+  screenHeight?: number;
   activeProcesses?: string[];
   terminalLines?: string[];
   imageBase64?: string;
@@ -231,10 +235,25 @@ export const localMacScreen = (agentId?: string) =>
     { timeoutMs: 10_000 },
   );
 
-export const localMacAction = (type: 'focus-app' | 'send-key', target: string) =>
-  api<{ ok: boolean }>('/api/local/mac-action', {
+export const localMacAction = (body: {
+  type:
+    | 'focus-app'
+    | 'send-key'
+    | 'click'
+    | 'doubleclick'
+    | 'rightclick'
+    | 'move'
+    | 'scroll'
+    | 'type-text';
+  target?: string;
+  x?: number;
+  y?: number;
+  deltaY?: number;
+  text?: string;
+}) =>
+  api<{ ok: boolean; detail?: string }>('/api/local/mac-action', {
     method: 'POST',
-    body: { type, target },
+    body,
     timeoutMs: 6_000,
   });
 

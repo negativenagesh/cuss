@@ -9,6 +9,7 @@ import {
   Linking,
   Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -219,6 +220,138 @@ function upsertSingleTurnThinking(
   return [...prev, newThinking];
 }
 
+/**
+ * Flicker-Free GPU Double-Buffered Mac Live Mirror Canvas + Touch-to-Control Surface
+ * - Maintains two stacked <Image> buffers (Slot A & Slot B).
+ * - Incoming base64 JPEG frames load into the hidden back-buffer and ONLY swap to front
+ *   inside `onLoad` after the GPU finishes decoding — eliminating 100% of frame flicker!
+ * - Touching anywhere on the 16:10 canvas maps (locationX, locationY) -> normalized (0..1, 0..1)
+ *   and posts a native CoreGraphics click / double-click / right-click on the Mac!
+ */
+function DoubleBufferedMirrorCanvas({
+  imageBase64,
+  aspectRatio = 16 / 10,
+  height = 240,
+  isLive = true,
+  onTouchPoint,
+}: {
+  imageBase64: string;
+  aspectRatio?: number;
+  height?: number;
+  isLive?: boolean;
+  onTouchPoint?: (nx: number, ny: number) => void;
+}) {
+  const [slotA, setSlotA] = useState<string>(imageBase64);
+  const [slotB, setSlotB] = useState<string>(imageBase64);
+  const [frontSlot, setFrontSlot] = useState<'A' | 'B'>('A');
+  const [canvasSize, setCanvasSize] = useState({ width: 320, height });
+  const [touchCrosshair, setTouchCrosshair] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!imageBase64) return;
+    if (frontSlot === 'A') {
+      if (imageBase64 !== slotA) setSlotB(imageBase64);
+    } else {
+      if (imageBase64 !== slotB) setSlotA(imageBase64);
+    }
+  }, [imageBase64]);
+
+  return (
+    <Pressable
+      onLayout={(e) => {
+        const { width: w, height: h } = e.nativeEvent.layout;
+        if (w > 0 && h > 0) setCanvasSize({ width: w, height: h });
+      }}
+      onPress={(e) => {
+        if (!onTouchPoint) return;
+        const { locationX, locationY } = e.nativeEvent;
+        const w = Math.max(canvasSize.width, 1);
+        const h = Math.max(canvasSize.height, 1);
+        // Compute actual rendered 16:10 image box inside resizeMode="contain"
+        const containerRatio = w / h;
+        let renderW = w;
+        let renderH = h;
+        let offsetX = 0;
+        let offsetY = 0;
+        if (containerRatio > aspectRatio) {
+          renderW = h * aspectRatio;
+          offsetX = (w - renderW) / 2;
+        } else {
+          renderH = w / aspectRatio;
+          offsetY = (h - renderH) / 2;
+        }
+        const nx = Math.max(0, Math.min(1, (locationX - offsetX) / Math.max(renderW, 1)));
+        const ny = Math.max(0, Math.min(1, (locationY - offsetY) / Math.max(renderH, 1)));
+        setTouchCrosshair({ x: locationX, y: locationY });
+        onTouchPoint(nx, ny);
+      }}
+      style={{
+        width: '100%',
+        height,
+        borderRadius: 12,
+        borderWidth: 1.5,
+        borderColor: isLive ? COLORS.lime : COLORS.borderHi,
+        backgroundColor: '#05050A',
+        overflow: 'hidden',
+      }}
+    >
+      <Image
+        source={{ uri: slotA }}
+        fadeDuration={0}
+        onLoad={() => {
+          if (slotA === imageBase64 && frontSlot !== 'A') setFrontSlot('A');
+        }}
+        style={[
+          StyleSheet.absoluteFill,
+          { opacity: frontSlot === 'A' ? 1 : 0, zIndex: frontSlot === 'A' ? 2 : 1 },
+        ]}
+        resizeMode="contain"
+      />
+      <Image
+        source={{ uri: slotB }}
+        fadeDuration={0}
+        onLoad={() => {
+          if (slotB === imageBase64 && frontSlot !== 'B') setFrontSlot('B');
+        }}
+        style={[
+          StyleSheet.absoluteFill,
+          { opacity: frontSlot === 'B' ? 1 : 0, zIndex: frontSlot === 'B' ? 2 : 1 },
+        ]}
+        resizeMode="contain"
+      />
+
+      {touchCrosshair ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            left: touchCrosshair.x - 14,
+            top: touchCrosshair.y - 14,
+            width: 28,
+            height: 28,
+            borderRadius: 14,
+            borderWidth: 2,
+            borderColor: COLORS.lime,
+            backgroundColor: 'rgba(212, 255, 0, 0.22)',
+            zIndex: 10,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <View
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: 3,
+              backgroundColor: COLORS.magenta,
+            }}
+          />
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
 export default function AgentDetailScreen({ route, navigation }: any) {
   const { agent, kind, initialPrompt } = route.params as {
     agent: Agent;
@@ -226,7 +359,13 @@ export default function AgentDetailScreen({ route, navigation }: any) {
     initialPrompt?: string;
   };
   const isMac = kind === 'mac';
-  const { setLocalAgents, renameLocalAgentOnDevice, deleteLocalAgentOnDevice } = useStore();
+  const {
+    localAgents,
+    setLocalAgents,
+    markLocalAgentRunning,
+    renameLocalAgentOnDevice,
+    deleteLocalAgentOnDevice,
+  } = useStore();
 
   // Initialize chat items immediately from Android device storage (or seed from initialPrompt if newly spawned)
   const [items, setItems] = useState<StreamItem[]>(() => {
@@ -286,10 +425,15 @@ export default function AgentDetailScreen({ route, navigation }: any) {
   const [shellOutput, setShellOutput] = useState('');
   const [shellUrls, setShellUrls] = useState<string[]>([]);
 
-  // Live Mac Screen / Browser Mirror state (REA 4427.index.js live streaming)
+  // Live Mac Screen / Browser Mirror state (REA 4427.index.js live streaming + touch control)
   const [peekModalOpen, setPeekModalOpen] = useState(false);
   const [peekLoading, setPeekLoading] = useState(false);
   const [liveMirrorStreaming, setLiveMirrorStreaming] = useState(true);
+  const [mirrorFullScreen, setMirrorFullScreen] = useState(false);
+  const [mirrorTouchMode, setMirrorTouchMode] = useState<'click' | 'doubleclick' | 'rightclick' | 'move'>('click');
+  const [showAllMacApps, setShowAllMacApps] = useState(false);
+  const [macKeyText, setMacKeyText] = useState('');
+  const [lastTouchStatus, setLastTouchStatus] = useState<string>('');
   const [peekData, setPeekData] = useState<MacMirrorFrame | null>(null);
 
   // Rename Chat modal state
@@ -305,7 +449,13 @@ export default function AgentDetailScreen({ route, navigation }: any) {
 
   const nextId = (prefix = 'it') => `${prefix}-${seqRef.current++}`;
 
-  // Header Rename & Delete buttons (Cursor chat header parity)
+  // Keep `runStatus` synced with the global store when returning to this chat
+  const storeAgentStatus = localAgents.find((a) => a.id === agent.id)?.lastStatus;
+  useEffect(() => {
+    if (storeAgentStatus) {
+      setRunStatus(storeAgentStatus);
+    }
+  }, [storeAgentStatus]);
   useEffect(() => {
     if (!isMac) return;
     navigation.setOptions({
@@ -597,20 +747,22 @@ export default function AgentDetailScreen({ route, navigation }: any) {
         live.connect();
         liveRef.current = live;
 
-        // Fallback if WebSocket hasn't replayed within 1.2s
-        setTimeout(() => {
-          if (cancelled || receivedAnyRef.current) return;
-          localDetail(agent.id)
-            .then((d) => {
-              if (!cancelled && !receivedAnyRef.current && d?.events?.length) {
-                receivedAnyRef.current = true;
-                for (const ev of d.events) ingestLocalEvent(ev.raw);
-              }
-            })
-            .catch(() => {
-              /* offline: saved Android device items remain displayed */
-            });
-        }, 1200);
+        // Also fetch `localDetail` immediately on mount so returning to a running/completed chat
+        // after navigating away immediately hydrates the latest status and events!
+        localDetail(agent.id)
+          .then((d) => {
+            if (cancelled) return;
+            if (d?.agent?.lastStatus) {
+              setRunStatus(String(d.agent.lastStatus));
+            }
+            if (d?.events?.length) {
+              receivedAnyRef.current = true;
+              for (const ev of d.events) ingestLocalEvent(ev.raw);
+            }
+          })
+          .catch(() => {
+            /* offline: saved Android device items remain displayed */
+          });
         return;
       }
 
@@ -673,6 +825,7 @@ export default function AgentDetailScreen({ route, navigation }: any) {
   async function handleFollowup(payload: ComposerSubmitPayload) {
     setBusy(true);
     setRunStatus('running');
+    if (isMac) markLocalAgentRunning(agent.id);
     isNearBottomRef.current = true;
     firstServerEventRef.current = false;
     assistantDeltaRef.current = '';
@@ -802,24 +955,14 @@ export default function AgentDetailScreen({ route, navigation }: any) {
   }
 
   // Subscribe/unsubscribe to continuous WebSocket `mirror:frame` stream while MAC LIVE MIRROR modal is open
+  // (No competing HTTP interval when WS is active so frames never race or flicker!)
   useEffect(() => {
     if (!peekModalOpen || !liveMirrorStreaming) {
       liveRef.current?.send({ type: 'mirror:unsubscribe' });
       return;
     }
     liveRef.current?.send({ type: 'mirror:subscribe', agentId: agent.id });
-    // Fallback HTTP poll if WS frame hasn't arrived yet
-    const iv = setInterval(async () => {
-      try {
-        const res = await localMacScreen(agent.id);
-        setPeekLoading(false);
-        setPeekData(res);
-      } catch {
-        /* ignore */
-      }
-    }, 1400);
     return () => {
-      clearInterval(iv);
       liveRef.current?.send({ type: 'mirror:unsubscribe' });
     };
   }, [peekModalOpen, liveMirrorStreaming, agent.id]);
@@ -1572,7 +1715,7 @@ export default function AgentDetailScreen({ route, navigation }: any) {
         </View>
       </Modal>
 
-      {/* MODAL: REA-Inspired Real-Time Mac Live Mirror (Continuous Video Stream + Terminal Grid + Browser & App Controls) */}
+      {/* MODAL: REA-Inspired Real-Time Mac Live Mirror (Flicker-Free Double-Buffered Video + Full Screen + Touch-to-Control + All Mac Apps) */}
       <Modal
         visible={peekModalOpen}
         animationType="fade"
@@ -1580,7 +1723,18 @@ export default function AgentDetailScreen({ route, navigation }: any) {
         onRequestClose={() => setPeekModalOpen(false)}
       >
         <View style={styles.diffModalBackdrop}>
-          <View style={styles.diffModalSheet}>
+          <View
+            style={[
+              styles.diffModalSheet,
+              mirrorFullScreen && {
+                height: '100%',
+                maxHeight: '100%',
+                borderTopLeftRadius: 0,
+                borderTopRightRadius: 0,
+                paddingTop: 42,
+              },
+            ]}
+          >
             <View style={styles.diffModalHeader}>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
@@ -1600,11 +1754,28 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                   ) : null}
                 </View>
                 <Text style={styles.diffModalSub} numberOfLines={1}>
-                  {peekData?.frontApp ? `${peekData.frontApp}` : 'MAC DISPLAY'}
+                  {peekData?.frontApp ? `ACTIVE // ${peekData.frontApp}` : 'MAC DISPLAY'}
                   {peekData?.windowTitle ? ` — ${peekData.windowTitle}` : ''}
                 </Text>
               </View>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                <SpringButton
+                  style={[
+                    styles.diffCloseBtn,
+                    mirrorFullScreen && { borderColor: COLORS.cyan, backgroundColor: COLORS.cyanDim },
+                  ]}
+                  onPress={() => setMirrorFullScreen((v) => !v)}
+                >
+                  <Text
+                    style={{
+                      fontFamily: FONTS.monoBold,
+                      fontSize: 9,
+                      color: mirrorFullScreen ? COLORS.cyan : COLORS.bone,
+                    }}
+                  >
+                    {mirrorFullScreen ? 'COMPACT' : 'FULL SCREEN'}
+                  </Text>
+                </SpringButton>
                 <SpringButton
                   style={[
                     styles.diffCloseBtn,
@@ -1615,7 +1786,7 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                   <Text
                     style={{
                       fontFamily: FONTS.monoBold,
-                      fontSize: 9.5,
+                      fontSize: 9,
                       color: liveMirrorStreaming ? COLORS.lime : COLORS.amber,
                     }}
                   >
@@ -1628,37 +1799,252 @@ export default function AgentDetailScreen({ route, navigation }: any) {
               </View>
             </View>
 
-            {/* 1-Tap Remote Mac App Switcher & Key Controls */}
+            {/* Row 1: Currently Open Apps on Mac (discovered live via System Events) + All Mac Apps Toggle */}
+            <Text style={styles.diffSectionLabel}>
+              OPEN APPS ON MAC NOW — TAP TO FOCUS ({peekData?.runningApps?.length ?? 0})
+            </Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              style={{ marginBottom: 10 }}
+              style={{ marginBottom: 8, maxHeight: 36 }}
             >
-              <View style={{ flexDirection: 'row', gap: 6 }}>
-                {[
-                  { label: 'FOCUS CURSOR', type: 'focus-app' as const, target: 'Cursor' },
-                  { label: 'FOCUS CHROME', type: 'focus-app' as const, target: 'Google Chrome' },
-                  { label: 'FOCUS BRAVE', type: 'focus-app' as const, target: 'Brave Browser' },
-                  { label: 'FOCUS TERMINAL', type: 'focus-app' as const, target: 'Terminal' },
-                  { label: 'KEY: ENTER', type: 'send-key' as const, target: 'enter' },
-                  { label: 'KEY: ESC', type: 'send-key' as const, target: 'escape' },
-                ].map((act) => (
-                  <SpringButton
-                    key={act.label}
-                    style={styles.branchChip}
-                    onPress={() => {
-                      void localMacAction(act.type, act.target);
-                    }}
+              <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                <SpringButton
+                  style={[
+                    styles.branchChip,
+                    showAllMacApps && { backgroundColor: COLORS.cyan, borderColor: COLORS.cyan },
+                  ]}
+                  onPress={() => setShowAllMacApps((v) => !v)}
+                >
+                  <Plus size={11} color={showAllMacApps ? COLORS.bg : COLORS.cyan} />
+                  <Text
+                    style={[
+                      styles.branchChipText,
+                      { color: showAllMacApps ? COLORS.bg : COLORS.cyan, fontFamily: FONTS.monoBold },
+                    ]}
                   >
-                    <Laptop size={10} color={COLORS.lime} />
-                    <Text style={styles.branchChipText}>{act.label}</Text>
-                  </SpringButton>
-                ))}
+                    ALL MAC APPS ({peekData?.installedApps?.length ?? 18})
+                  </Text>
+                </SpringButton>
+
+                {(peekData?.runningApps?.length
+                  ? peekData.runningApps
+                  : ['Cursor', 'Google Chrome', 'Helium', 'Terminal', 'Slack', 'Finder']
+                ).map((appName) => {
+                  const isFront = peekData?.frontApp?.toLowerCase() === appName.toLowerCase();
+                  return (
+                    <SpringButton
+                      key={appName}
+                      style={[
+                        styles.branchChip,
+                        isFront && { backgroundColor: COLORS.lime, borderColor: COLORS.lime },
+                      ]}
+                      onPress={() => {
+                        void localMacAction({ type: 'focus-app', target: appName });
+                      }}
+                    >
+                      <Laptop size={10} color={isFront ? COLORS.bg : COLORS.lime} />
+                      <Text
+                        style={[
+                          styles.branchChipText,
+                          isFront && { color: COLORS.bg, fontFamily: FONTS.monoBold },
+                        ]}
+                      >
+                        {appName}
+                      </Text>
+                    </SpringButton>
+                  );
+                })}
               </View>
             </ScrollView>
 
-            <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 20 }}>
-              {/* Active Mac Browser Tab Mirror (if Chrome / Brave / Safari is frontmost) */}
+            {/* Expandable All Installed Mac Apps Launcher Grid (REA discovered /Applications) */}
+            {showAllMacApps && peekData?.installedApps?.length ? (
+              <View
+                style={{
+                  backgroundColor: COLORS.plate,
+                  borderWidth: 1,
+                  borderColor: COLORS.cyan,
+                  borderRadius: 10,
+                  padding: 8,
+                  marginBottom: 8,
+                  maxHeight: 115,
+                }}
+              >
+                <ScrollView>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                    {peekData.installedApps.map((app) => {
+                      const isFront = peekData?.frontApp?.toLowerCase() === app.toLowerCase();
+                      return (
+                        <SpringButton
+                          key={app}
+                          style={[
+                            styles.branchChip,
+                            isFront && { backgroundColor: COLORS.lime, borderColor: COLORS.lime },
+                          ]}
+                          onPress={() => {
+                            void localMacAction({ type: 'focus-app', target: app });
+                            setShowAllMacApps(false);
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.branchChipText,
+                              { fontSize: 10 },
+                              isFront && { color: COLORS.bg, fontFamily: FONTS.monoBold },
+                            ]}
+                          >
+                            {app}
+                          </Text>
+                        </SpringButton>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+              </View>
+            ) : null}
+
+            <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 24 }}>
+              {/* Flicker-Free Double-Buffered Live Mirror + Touch-to-Control Canvas */}
+              {peekLoading && !peekData?.imageBase64 ? (
+                <CussSmallArtLoader
+                  variant="card"
+                  title="LOCKING LIVE MAC MIRROR STREAM"
+                  subtitle="Streaming real-time display frames & PTY buffer over WebSocket…"
+                  accentColor={COLORS.amber}
+                />
+              ) : peekData?.ok && peekData.imageBase64 ? (
+                <View style={{ gap: 6 }}>
+                  <DoubleBufferedMirrorCanvas
+                    imageBase64={peekData.imageBase64}
+                    aspectRatio={(peekData.screenWidth ?? 1440) / (peekData.screenHeight ?? 900)}
+                    height={mirrorFullScreen ? 360 : 235}
+                    isLive={liveMirrorStreaming}
+                    onTouchPoint={(nx, ny) => {
+                      setLastTouchStatus(
+                        `${mirrorTouchMode.toUpperCase()} @ (${Math.round(nx * 100)}%, ${Math.round(ny * 100)}%)`,
+                      );
+                      void localMacAction({ type: mirrorTouchMode, x: nx, y: ny });
+                    }}
+                  />
+
+                  {/* Touch Mode & Scroll Control Bar */}
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                      {(
+                        [
+                          { id: 'click', label: 'TAP: CLICK' },
+                          { id: 'doubleclick', label: 'TAP: DOUBLE' },
+                          { id: 'rightclick', label: 'TAP: RIGHT' },
+                          { id: 'move', label: 'TAP: MOVE' },
+                        ] as const
+                      ).map((tm) => {
+                        const active = mirrorTouchMode === tm.id;
+                        return (
+                          <SpringButton
+                            key={tm.id}
+                            style={[
+                              styles.branchChip,
+                              active && { backgroundColor: COLORS.lime, borderColor: COLORS.lime },
+                            ]}
+                            onPress={() => setMirrorTouchMode(tm.id)}
+                          >
+                            <Text
+                              style={[
+                                styles.branchChipText,
+                                { fontSize: 9.5 },
+                                active && { color: COLORS.bg, fontFamily: FONTS.monoBold },
+                              ]}
+                            >
+                              {tm.label}
+                            </Text>
+                          </SpringButton>
+                        );
+                      })}
+                      <SpringButton
+                        style={styles.branchChip}
+                        onPress={() => void localMacAction({ type: 'scroll', deltaY: 8 })}
+                      >
+                        <Text style={[styles.branchChipText, { fontSize: 9.5, color: COLORS.cyan }]}>
+                          SCROLL ↑
+                        </Text>
+                      </SpringButton>
+                      <SpringButton
+                        style={styles.branchChip}
+                        onPress={() => void localMacAction({ type: 'scroll', deltaY: -8 })}
+                      >
+                        <Text style={[styles.branchChipText, { fontSize: 9.5, color: COLORS.cyan }]}>
+                          SCROLL ↓
+                        </Text>
+                      </SpringButton>
+                    </View>
+                  </ScrollView>
+
+                  {/* Remote Mac Keyboard & Shortcut Bar */}
+                  <View style={styles.gitActionRow}>
+                    <TextInput
+                      style={styles.gitInput}
+                      placeholder="Type text onto active Mac window…"
+                      placeholderTextColor={COLORS.dim}
+                      value={macKeyText}
+                      onChangeText={setMacKeyText}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    <SpringButton
+                      style={styles.gitMiniBtn}
+                      disabled={!macKeyText}
+                      onPress={() => {
+                        const txt = macKeyText;
+                        setMacKeyText('');
+                        void localMacAction({ type: 'type-text', text: txt });
+                      }}
+                    >
+                      <Send size={12} color={COLORS.bg} />
+                      <Text style={styles.gitMiniBtnText}>TYPE</Text>
+                    </SpringButton>
+                  </View>
+
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={{ flexDirection: 'row', gap: 6 }}>
+                      {[
+                        { label: 'ENTER', key: 'enter' },
+                        { label: 'BACKSPACE', key: 'backspace' },
+                        { label: 'TAB', key: 'tab' },
+                        { label: 'SPACE', key: 'space' },
+                        { label: 'ESC', key: 'escape' },
+                        { label: 'CMD+TAB', key: 'cmd+tab' },
+                        { label: 'CMD+R', key: 'reload' },
+                        { label: 'CMD+W', key: 'cmd+w' },
+                      ].map((k) => (
+                        <SpringButton
+                          key={k.key}
+                          style={styles.branchChip}
+                          onPress={() => void localMacAction({ type: 'send-key', target: k.key })}
+                        >
+                          <Text style={[styles.branchChipText, { fontSize: 9.5 }]}>{k.label}</Text>
+                        </SpringButton>
+                      ))}
+                    </View>
+                  </ScrollView>
+
+                  <Text style={styles.diffModalSub}>
+                    TOUCH SCREEN TO CONTROL MAC ·{' '}
+                    {lastTouchStatus
+                      ? `${lastTouchStatus} · `
+                      : ''}
+                    {new Date(peekData.capturedAt).toLocaleTimeString()}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.gitOutputBox}>
+                  <Text style={styles.gitOutputText}>
+                    {peekData?.hint ?? 'Unable to capture Mac screen.'}
+                  </Text>
+                </View>
+              )}
+
+              {/* Active Mac Browser Tab Mirror (if Chrome / Helium / Thorium / Brave / Safari is frontmost) */}
               {peekData?.browserUrl ? (
                 <View style={styles.oauthUrlCard}>
                   <Text style={styles.diffSectionLabel}>
@@ -1677,42 +2063,6 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                   </SpringButton>
                 </View>
               ) : null}
-
-              {/* Live Continuous Video Stream of Mac Display (fadeDuration=0 prevents Android frame flicker!) */}
-              {peekLoading && !peekData?.imageBase64 ? (
-                <CussSmallArtLoader
-                  variant="card"
-                  title="LOCKING LIVE MAC MIRROR STREAM"
-                  subtitle="Streaming real-time display frames & PTY buffer over WebSocket…"
-                  accentColor={COLORS.amber}
-                />
-              ) : peekData?.ok && peekData.imageBase64 ? (
-                <View style={{ alignItems: 'center', gap: 6 }}>
-                  <Image
-                    source={{ uri: peekData.imageBase64 }}
-                    fadeDuration={0}
-                    style={{
-                      width: '100%',
-                      height: 250,
-                      borderRadius: 12,
-                      borderWidth: 1.5,
-                      borderColor: liveMirrorStreaming ? COLORS.lime : COLORS.borderHi,
-                      backgroundColor: '#05050A',
-                    }}
-                    resizeMode="contain"
-                  />
-                  <Text style={styles.diffModalSub}>
-                    LIVE STREAM // {new Date(peekData.capturedAt).toLocaleTimeString()} ·{' '}
-                    {liveMirrorStreaming ? 'AUTO-UPDATING' : 'PAUSED'}
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.gitOutputBox}>
-                  <Text style={styles.gitOutputText}>
-                    {peekData?.hint ?? 'Unable to capture Mac screen.'}
-                  </Text>
-                </View>
-              )}
 
               {/* REA 4427.index.js Repaint-Debug Live Terminal & Agent Stream Grid */}
               <Text style={styles.diffSectionLabel}>

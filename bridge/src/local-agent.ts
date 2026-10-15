@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -116,6 +116,8 @@ export class LocalAgentService extends EventEmitter {
   private loginProc: ChildProcess | null = null;
   private currentLoginUrl: string | undefined;
   private mirrorFrameSeq = 0;
+  private activeCapturePromise: Promise<any> | null = null;
+  private cachedInstalledApps: string[] | null = null;
   private warmChatIds = new Map<string, string>();
   private static readonly EVENT_BUFFER = 250;
 
@@ -698,11 +700,141 @@ export class LocalAgentService extends EventEmitter {
   }
 
   /**
-   * Capture a live REA-inspired Mirror Frame (`4427.index.js` Repaint-Debug + macOS Display + Browser + Process Tree):
-   * - Compressed JPEG display frame (~60KB, with cursor `-C`)
-   * - Frontmost macOS application & active window title
-   * - Active browser tab URL & title (Chrome / Brave / Safari)
-   * - Live terminal/event buffer lines + running Cursor/shell child processes
+   * Discover all installed macOS `.app` bundles (verified via REA `ev_3940722e...`):
+   * `/Applications`, `/System/Applications`, `/System/Applications/Utilities`, and `~/Applications`.
+   */
+  listInstalledMacApps(): string[] {
+    if (this.cachedInstalledApps && this.cachedInstalledApps.length > 0) {
+      return this.cachedInstalledApps;
+    }
+    const appDirs = [
+      '/Applications',
+      '/System/Applications',
+      '/System/Applications/Utilities',
+      join(homedir(), 'Applications'),
+    ];
+    const names = new Set<string>(['Cursor', 'Finder', 'Terminal', 'Google Chrome', 'Safari']);
+    for (const dir of appDirs) {
+      if (!existsSync(dir)) continue;
+      try {
+        for (const entry of readdirSync(dir)) {
+          if (entry.endsWith('.app')) {
+            names.add(entry.slice(0, -4));
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    const priority = [
+      'Cursor',
+      'Google Chrome',
+      'Helium',
+      'Thorium',
+      'Terminal',
+      'Ghostty',
+      'OpenCode',
+      'Claude',
+      'Slack',
+      'Notion',
+      'Docker',
+      'Safari',
+      'Finder',
+      'System Settings',
+      'Activity Monitor',
+    ];
+    const sorted = [...names].sort((a, b) => {
+      const ia = priority.indexOf(a);
+      const ib = priority.indexOf(b);
+      if (ia !== -1 && ib !== -1) return ia - ib;
+      if (ia !== -1) return -1;
+      if (ib !== -1) return 1;
+      return a.localeCompare(b);
+    });
+    this.cachedInstalledApps = sorted;
+    return sorted;
+  }
+
+  /**
+   * Ensure the compiled native CoreGraphics input helper (`/tmp/cuss-mac-input`) exists on disk
+   * so touch events on the Android Live Mirror execute mouse clicks/scrolls in <10ms.
+   */
+  private async ensureMacInputBinary(): Promise<string> {
+    const binPath = '/tmp/cuss-mac-input';
+    if (existsSync(binPath)) return binPath;
+    const swiftPath = '/tmp/cuss-mac-input.swift';
+    const swiftSrc = `
+import Foundation
+import CoreGraphics
+
+let args = CommandLine.arguments
+let displayId = CGMainDisplayID()
+let width = Double(CGDisplayPixelsWide(displayId))
+let height = Double(CGDisplayPixelsHigh(displayId))
+
+if args.count < 2 || args[1] == "info" {
+    print("\\(Int(width))x\\(Int(height))")
+    exit(0)
+}
+
+let mode = args[1]
+if (mode == "click" || mode == "doubleclick" || mode == "rightclick" || mode == "move") && args.count >= 4 {
+    let nx = max(0.0, min(1.0, Double(args[2]) ?? 0.5))
+    let ny = max(0.0, min(1.0, Double(args[3]) ?? 0.5))
+    let pt = CGPoint(x: nx * width, y: ny * height)
+    if let moveEvt = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left) {
+        moveEvt.post(tap: .cghidEventTap)
+    }
+    if mode == "click" {
+        usleep(12000)
+        CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: pt, mouseButton: .left)?.post(tap: .cghidEventTap)
+        usleep(18000)
+        CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: pt, mouseButton: .left)?.post(tap: .cghidEventTap)
+    } else if mode == "doubleclick" {
+        usleep(12000)
+        if let d1 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: pt, mouseButton: .left),
+           let u1 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: pt, mouseButton: .left),
+           let d2 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: pt, mouseButton: .left),
+           let u2 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: pt, mouseButton: .left) {
+            d1.setIntegerValueField(.mouseEventClickState, value: 1)
+            u1.setIntegerValueField(.mouseEventClickState, value: 1)
+            d2.setIntegerValueField(.mouseEventClickState, value: 2)
+            u2.setIntegerValueField(.mouseEventClickState, value: 2)
+            d1.post(tap: .cghidEventTap)
+            u1.post(tap: .cghidEventTap)
+            usleep(25000)
+            d2.post(tap: .cghidEventTap)
+            u2.post(tap: .cghidEventTap)
+        }
+    } else if mode == "rightclick" {
+        usleep(12000)
+        CGEvent(mouseEventSource: nil, mouseType: .rightMouseDown, mouseCursorPosition: pt, mouseButton: .right)?.post(tap: .cghidEventTap)
+        usleep(18000)
+        CGEvent(mouseEventSource: nil, mouseType: .rightMouseUp, mouseCursorPosition: pt, mouseButton: .right)?.post(tap: .cghidEventTap)
+    }
+    print("OK \\(Int(pt.x)),\\(Int(pt.y))")
+} else if mode == "scroll" && args.count >= 3 {
+    let dy = Int32(args[2]) ?? -5
+    if let scrollEvt = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: dy, wheel2: 0, wheel3: 0) {
+        scrollEvt.post(tap: .cghidEventTap)
+    }
+    print("OK scroll \\(dy)")
+}
+`;
+    writeFileSync(swiftPath, swiftSrc);
+    await new Promise<void>((resolve) => {
+      const p = spawn('/usr/bin/swiftc', ['-O', swiftPath, '-o', binPath], { env: RUN_ENV });
+      p.on('error', () => resolve());
+      p.on('exit', () => resolve());
+    });
+    return binPath;
+  }
+
+  /**
+   * Capture a live REA-inspired Mirror Frame (`4427.index.js` Repaint-Debug + macOS Display + Browser + App Inventory):
+   * - Single-flight atomic capture (`screencapture` -> `/tmp/cuss-mac-stage.jpg` -> `renameSync` to `/tmp/cuss-mac-peek.jpg`)
+   *   so concurrent WS/HTTP polls never race or flicker!
+   * - Lists all running GUI apps (`runningApps`) and all installed Mac apps (`installedApps`)
    */
   async captureMacScreen(agentId?: string): Promise<{
     ok: boolean;
@@ -711,13 +843,28 @@ export class LocalAgentService extends EventEmitter {
     windowTitle?: string;
     browserUrl?: string;
     browserTitle?: string;
+    runningApps: string[];
+    installedApps: string[];
+    screenWidth: number;
+    screenHeight: number;
     activeProcesses: string[];
     terminalLines: string[];
     imageBase64?: string;
     capturedAt: string;
     hint?: string;
   }> {
+    if (this.activeCapturePromise) {
+      return await this.activeCapturePromise;
+    }
+    this.activeCapturePromise = this.doCaptureMacScreen(agentId).finally(() => {
+      this.activeCapturePromise = null;
+    });
+    return await this.activeCapturePromise;
+  }
+
+  private async doCaptureMacScreen(agentId?: string) {
     const seq = ++this.mirrorFrameSeq;
+    const stagePath = `/tmp/cuss-mac-stage-${process.pid}.jpg`;
     const imgPath = '/tmp/cuss-mac-peek.jpg';
 
     const metaScript = `
@@ -728,12 +875,26 @@ tell application "System Events"
   try
     set winTitle to name of front window of frontProc
   end try
+  set openList to name of every process whose background only is false
 end tell
+set AppleScript's text item delimiters to ",,"
+set openStr to openList as string
+set AppleScript's text item delimiters to ""
 set bUrl to ""
 set bTitle to ""
 try
   if appName is "Google Chrome" then
     tell application "Google Chrome"
+      set bUrl to URL of active tab of front window
+      set bTitle to title of active tab of front window
+    end tell
+  else if appName is "Helium" then
+    tell application "Helium"
+      set bUrl to URL of active tab of front window
+      set bTitle to title of active tab of front window
+    end tell
+  else if appName is "Thorium" then
+    tell application "Thorium"
       set bUrl to URL of active tab of front window
       set bTitle to title of active tab of front window
     end tell
@@ -749,11 +910,11 @@ try
     end tell
   end if
 end try
-return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle
+return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle & "|||" & openStr
 `;
 
     const [metaRaw, psRaw, capCode] = await Promise.all([
-      this.execOsascript(metaScript).catch(() => 'macOS Desktop||||||'),
+      this.execOsascript(metaScript).catch(() => 'macOS Desktop||||||||'),
       new Promise<string>((resolve) => {
         const p = spawn('/bin/ps', ['-Ao', 'pid,comm,args'], { env: RUN_ENV });
         let out = '';
@@ -766,7 +927,7 @@ return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle
           '/bin/zsh',
           [
             '-c',
-            '/usr/sbin/screencapture -x -C -t jpg /tmp/cuss-mac-peek.jpg && /usr/bin/sips -Z 920 -s formatOptions 55 /tmp/cuss-mac-peek.jpg >/dev/null 2>&1',
+            `/usr/sbin/screencapture -x -C -t jpg ${stagePath} && /usr/bin/sips -Z 960 -s formatOptions 60 ${stagePath} >/dev/null 2>&1`,
           ],
           { env: RUN_ENV },
         );
@@ -775,11 +936,28 @@ return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle
       }),
     ]);
 
-    const [frontAppRaw, winTitleRaw, bUrlRaw, bTitleRaw] = metaRaw.trim().split('|||');
+    if (capCode === 0 && existsSync(stagePath)) {
+      try {
+        renameSync(stagePath, imgPath);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const [frontAppRaw, winTitleRaw, bUrlRaw, bTitleRaw, openAppsRaw] = metaRaw.trim().split('|||');
     const frontApp = (frontAppRaw || 'macOS Desktop').trim();
     const windowTitle = (winTitleRaw || '').trim() || undefined;
     const browserUrl = (bUrlRaw || '').trim() || undefined;
     const browserTitle = (bTitleRaw || '').trim() || undefined;
+    const runningApps = Array.from(
+      new Set(
+        (openAppsRaw || '')
+          .split(',,')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
+    );
+    const installedApps = this.listInstalledMacApps();
 
     const activeProcesses = psRaw
       .split(/\r?\n/)
@@ -821,7 +999,7 @@ return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle
       }
     }
 
-    if (capCode === 0 && existsSync(imgPath)) {
+    if (existsSync(imgPath)) {
       const b64 = readFileSync(imgPath).toString('base64');
       return {
         ok: true,
@@ -830,6 +1008,10 @@ return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle
         windowTitle,
         browserUrl,
         browserTitle,
+        runningApps,
+        installedApps,
+        screenWidth: 1440,
+        screenHeight: 900,
         activeProcesses,
         terminalLines: terminalLines.slice(-20),
         imageBase64: `data:image/jpeg;base64,${b64}`,
@@ -844,6 +1026,10 @@ return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle
       windowTitle,
       browserUrl,
       browserTitle,
+      runningApps,
+      installedApps,
+      screenWidth: 1440,
+      screenHeight: 900,
       activeProcesses,
       terminalLines: terminalLines.slice(-20),
       capturedAt: new Date().toISOString(),
@@ -853,31 +1039,101 @@ return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle
 
   /**
    * Perform a remote control action on the Mac from the Live Mirror view:
-   * - `focus-app`: Activate Cursor, Terminal, Google Chrome, or Brave Browser on the Mac
-   * - `send-key`: Send Enter, Escape, Space, or Cmd+R to the frontmost Mac window
+   * - `focus-app`: Launch or activate ANY installed/running application on the Mac (`open -a`)
+   * - `click` | `doubleclick` | `rightclick` | `move`: Native CoreGraphics mouse control at normalized `(x, y)`
+   * - `scroll`: Native CoreGraphics scroll wheel (`deltaY`)
+   * - `type-text`: Type text directly into the frontmost Mac window
+   * - `send-key`: Send Enter, Escape, Space, Tab, Backspace, Arrows, or Cmd shortcuts
    */
   async performMacAction(action: {
-    type: 'focus-app' | 'send-key';
-    target: string;
-  }): Promise<{ ok: boolean }> {
+    type:
+      | 'focus-app'
+      | 'send-key'
+      | 'click'
+      | 'doubleclick'
+      | 'rightclick'
+      | 'move'
+      | 'scroll'
+      | 'type-text';
+    target?: string;
+    x?: number;
+    y?: number;
+    deltaY?: number;
+    text?: string;
+  }): Promise<{ ok: boolean; detail?: string }> {
     if (action.type === 'focus-app' && action.target) {
-      await this.execOsascript(`tell application ${JSON.stringify(action.target)} to activate`).catch(
+      const appName = action.target.trim();
+      await new Promise<void>((resolve) => {
+        const p = spawn('open', ['-a', appName], { env: RUN_ENV });
+        p.on('error', () => resolve());
+        p.on('exit', () => resolve());
+      });
+      await this.execOsascript(`tell application ${JSON.stringify(appName)} to activate`).catch(
         () => {},
       );
-      return { ok: true };
+      return { ok: true, detail: `Activated ${appName}` };
     }
-    if (action.type === 'send-key') {
+
+    if (
+      action.type === 'click' ||
+      action.type === 'doubleclick' ||
+      action.type === 'rightclick' ||
+      action.type === 'move'
+    ) {
+      const bin = await this.ensureMacInputBinary();
+      const nx = Math.max(0, Math.min(1, Number(action.x ?? 0.5)));
+      const ny = Math.max(0, Math.min(1, Number(action.y ?? 0.5)));
+      const detail = await new Promise<string>((resolve) => {
+        const p = spawn(bin, [action.type, String(nx), String(ny)], { env: RUN_ENV });
+        let out = '';
+        p.stdout.on('data', (d) => (out += d.toString('utf8')));
+        p.on('error', () => resolve(''));
+        p.on('exit', () => resolve(out.trim()));
+      });
+      return { ok: true, detail };
+    }
+
+    if (action.type === 'scroll') {
+      const bin = await this.ensureMacInputBinary();
+      const dy = Math.round(Number(action.deltaY ?? -6));
+      await new Promise<void>((resolve) => {
+        const p = spawn(bin, ['scroll', String(dy)], { env: RUN_ENV });
+        p.on('error', () => resolve());
+        p.on('exit', () => resolve());
+      });
+      return { ok: true, detail: `Scrolled ${dy}` };
+    }
+
+    if (action.type === 'type-text' && action.text) {
+      const safe = JSON.stringify(action.text);
+      await this.execOsascript(`tell application "System Events" to keystroke ${safe}`).catch(
+        () => {},
+      );
+      return { ok: true, detail: 'Typed text' };
+    }
+
+    if (action.type === 'send-key' && action.target) {
       const keyMap: Record<string, string> = {
         enter: 'key code 36',
         escape: 'key code 53',
         space: 'key code 49',
+        tab: 'key code 48',
+        backspace: 'key code 51',
+        up: 'key code 126',
+        down: 'key code 125',
+        left: 'key code 123',
+        right: 'key code 124',
         reload: 'keystroke "r" using command down',
+        'cmd+c': 'keystroke "c" using command down',
+        'cmd+v': 'keystroke "v" using command down',
+        'cmd+w': 'keystroke "w" using command down',
+        'cmd+tab': 'key code 48 using command down',
       };
       const cmd = keyMap[action.target.toLowerCase()];
       if (cmd) {
         await this.execOsascript(`tell application "System Events" to ${cmd}`).catch(() => {});
       }
-      return { ok: true };
+      return { ok: true, detail: `Sent ${action.target}` };
     }
     return { ok: false };
   }

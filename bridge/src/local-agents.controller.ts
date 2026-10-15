@@ -140,11 +140,29 @@ export class LocalAgentsController {
   }
 
   @Post('mac-action')
-  async macAction(@Body() body: { type?: 'focus-app' | 'send-key'; target?: string }) {
-    if (!body?.type || !body?.target) {
-      throw new HttpException({ code: 'validation_error', message: 'type and target are required' }, 400);
+  async macAction(
+    @Body()
+    body: {
+      type?:
+        | 'focus-app'
+        | 'send-key'
+        | 'click'
+        | 'doubleclick'
+        | 'rightclick'
+        | 'move'
+        | 'scroll'
+        | 'type-text';
+      target?: string;
+      x?: number;
+      y?: number;
+      deltaY?: number;
+      text?: string;
+    },
+  ) {
+    if (!body?.type) {
+      throw new HttpException({ code: 'validation_error', message: 'type is required' }, 400);
     }
-    return await this.local.performMacAction({ type: body.type, target: body.target });
+    return await this.local.performMacAction(body as any);
   }
 
   @Post('transcribe')
