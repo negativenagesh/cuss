@@ -103,7 +103,7 @@ You **never** need the `Cursor.app` GUI window open on your Mac to use CUSS from
 
 ---
 
-## 🛠️ Complete Step-by-Step Setup & Build Guide (Mac + Android Expo Go)
+## 🛠️ Developer Setup (Mac + Android Expo Go)
 
 ### Prerequisites
 1. **macOS** with [Cursor](https://cursor.com) installed at `/Applications/Cursor.app` and **Node.js 20+**.
@@ -139,6 +139,45 @@ This installs **`/Applications/CUSS Menu.app`** in your top macOS status bar (`�
    - On startup, the bridge automatically imports `cursorAuth/accessToken` and `cursorAuth/refreshToken` from `Cursor.app`'s SQLite database (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`) into `~/.cursor/auth.json` — **you never need to open Terminal or run `cursor agent login`**.
 2. **Direct Phone Browser OAuth (`SIGN IN TO CURSOR TO CONTINUE`)**:
    - Even if `Cursor.app` isn't logged in on your Mac, tapping **`SIGN IN TO CURSOR TO CONTINUE`** on your Android phone generates a PKCE challenge (`https://cursor.com/loginDeepControl?...`) at `t = 0ms`, opens Chrome/Brave on your phone, polls `https://api2.cursor.sh/auth/poll`, and pushes `{ accessToken, refreshToken }` to `POST /api/local/auth/complete` (`~/.cursor/auth.json`).
+
+---
+
+## 📦 Install for Everyone — `cuss.dmg` (Mac) + `cuss.apk` (Android)
+
+No Node, no npm, no terminal, no Xcode on the target Mac. Two files:
+
+| File | What it does |
+| :--- | :--- |
+| **`dist/cuss.dmg`** (~60 MB) | Mount → double-click **Install CUSS**. A native Core Animation installer (crest draw-on, staggered **CUSS** wordmark, live progress rail, particle burst) installs a bundled **Node 22 runtime + Mac Bridge + precompiled native helpers** into `~/Library/Application Support/CUSS`, drops **`/Applications/CUSS Menu.app`** into your menu bar, writes the `com.cuss.bridge` / `com.cuss.menubar` LaunchAgents, syncs your Cursor Desktop login, waits for `:4040` to come online, then shows the **pairing QR**. Requires Apple Silicon + Cursor.app. First launch: right-click → **Open** (ad-hoc signed, not notarized). |
+| **`dist/cuss.apk`** | Native Android build of the phone app (brand icon, adaptive icon, splash). Install → open → **SCAN** the QR from the installer or from **⚡ CUSS → Pair Phone** in the menu bar. |
+
+When macOS asks, allow **Accessibility** and **Screen Recording** for **node** — this powers the Live Keyboard field echo and the Live Mirror.
+
+Build them yourself:
+```bash
+npm run dmg      # → dist/cuss.dmg   (needs Xcode Command Line Tools on the build Mac)
+npm run apk      # → EAS cloud build (npx eas-cli login once)
+npm run apk:download
+```
+
+---
+
+## ⌨️ Remote Keyboard v2 — type from your phone into any Mac window
+
+Open **MAC LIVE MIRROR** → tap a text field on the mirrored screen → type. Every keystroke streams over WebSocket (`mirror:input`) into a persistent native `CGEvent` daemon (`bridge/native/cuss-mac-input.swift`), strictly ordered, full Unicode/emoji, ~5 ms.
+
+| Feature | How it works |
+| :--- | :--- |
+| **Focused-field echo** | Accessibility snapshot of the Mac's focused element (`AXFocusedUIElement`, Electron apps via `AXManualAccessibility`) shows role, title, and the live field value with a blinking caret under your phone input. |
+| **Secure-field lock** | `AXSecureTextField` → magenta lock, echo disabled, phone input switches to `secureTextEntry`, nothing logged. |
+| **Field-aware Enter** | Per-app Enter policy (`AUTO` / `⏎` / `⌘⏎` / `⇧⏎`) remembered on the device, so Enter in Slack sends while Enter in an editor adds a line. |
+| **Undo last burst** | One tap reverses the last typed burst (backspaces + restores deleted text). |
+| **Latency HUD** | p50 round-trip of the last 20 acks, color-coded (green < 80 ms). |
+| **Clipboard bridge** | Phone → Mac via `pbcopy` + `⌘V` (one keystroke for long text); Mac → Phone via `pbpaste`. |
+| **Dictate → Mac** | Phone mic → `SFSpeechRecognizer` helper (`cuss-mac-speech`) → typed live into the focused field. |
+| **Trackpad mode** | Drag = relative cursor motion, tap = click, long-press = right-click, two fingers = pixel scroll, with ripple feedback. |
+| **Per-app quick actions** | Rails for Cursor, VS Code, Chrome/Brave/Arc/Safari, Terminal/iTerm/Warp/Ghostty, Slack/Discord, Finder, Notes + 40 native key combos. |
+| **Snippets** | Save any typed text as a reusable chip (long-press to delete). |
 
 ---
 

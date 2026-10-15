@@ -240,6 +240,7 @@ def main() -> None:
     icon.save(OUT_BRAND / "cuss-logo-1024.png")
     icon.resize((48, 48), Image.LANCZOS).save(OUT_MOBILE / "favicon.png")
     make_adaptive_foreground().save(OUT_MOBILE / "adaptive-icon.png")
+    draw_crest(1024, transparent_bg=True, scale=1.0).save(OUT_MOBILE / "splash-icon.png")
     make_splash().save(OUT_MOBILE / "splash.png")
     make_dmg_background().save(OUT_BRAND / "dmg-background.png")
     make_icns(icon, OUT_BRAND / "CUSS.icns")

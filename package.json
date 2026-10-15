@@ -12,6 +12,8 @@
     "native:build": "bash ./bridge/native/build.sh",
     "brand:assets": "python3 ./assets/brand/generate-brand-assets.py",
     "dmg": "bash ./installer/build-dmg.sh",
+    "apk": "cd mobile && npx eas-cli build --platform android --profile apk",
+    "apk:download": "cd mobile && npx eas-cli build:download --platform android --profile apk --output ../dist/cuss.apk",
     "test": "npm --prefix bridge test && ./bridge/node_modules/.bin/tsc -p bridge/tsconfig.json --noEmit && ./mobile/node_modules/.bin/tsc -p mobile/tsconfig.json --noEmit"
   }
 }

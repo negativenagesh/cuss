@@ -2,30 +2,102 @@
   "expo": {
     "name": "CUSS",
     "slug": "cuss",
-    "version": "0.3.0",
+    "version": "0.5.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "missioncontrol",
     "backgroundColor": "#07070C",
+    "icon": "./assets/icon.png",
     "android": {
       "package": "com.local.cuss",
-      "softwareKeyboardLayoutMode": "resize"
+      "versionCode": 5,
+      "softwareKeyboardLayoutMode": "resize",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#07070C"
+      },
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "INTERNET",
+        "VIBRATE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "missioncontrol",
+              "host": "pair"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.local.cuss"
+      "bundleIdentifier": "com.local.cuss",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 260,
+          "resizeMode": "contain",
+          "backgroundColor": "#07070C"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true,
+            "enableProguardInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "enableMinifyInReleaseBuilds": true
+          }
+        }
+      ],
       [
         "expo-camera",
         {
           "cameraPermission": "Allow CUSS to scan the Mac bridge pairing QR reticle."
         }
       ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow CUSS to dictate prompts and type speech onto your Mac."
+        }
+      ],
       "expo-secure-store",
       "expo-asset",
-      "expo-font",
-      "expo-audio"
-    ]
+      "expo-font"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "4d130304-d1a6-49de-92fb-76caaf0349bb"
+      }
+    },
+    "owner": "negativenagesh"
   }
 }
