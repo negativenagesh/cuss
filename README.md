@@ -2,251 +2,230 @@
 
 <img src="./assets/cuss-banner.svg" alt="CUSS — Cybernetic Umbilical Studio & Synth" width="100%" />
 
-<br />
+# CUSS — Cybernetic Umbilical Studio & Synth
 
-# **CUSS** // Cybernetic Umbilical Studio & Synth
+**A mobile engineering workstation for Android and iOS that drives your Mac's local Cursor CLI and IDE over a low-latency local bridge — with zero API keys, zero terminal setup, and full Cursor parity.**
 
-**A Neo-Y2K Brutalist-Cybernetic Mobile Control Deck (Expo / Android & iOS) that drives your Mac's local Cursor CLI & IDE headlessly — with Zero API Keys.**
-
-[![GitHub Stars](https://img.shields.io/github/stars/negativenagesh/cuss?style=for-the-badge&logo=github&color=D4FF00&labelColor=07070C)](https://github.com/negativenagesh/cuss/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/negativenagesh/cuss?style=for-the-badge&logo=github&color=00F0FF&labelColor=07070C)](https://github.com/negativenagesh/cuss/network/members)
-[![Expo SDK 55](https://img.shields.io/badge/EXPO_GO-SDK_55-D4FF00?style=for-the-badge&logo=expo&logoColor=07070C&labelColor=10111A)](https://expo.dev)
-[![NestJS Bridge](https://img.shields.io/badge/MAC_BRIDGE-NESTJS_10-00F0FF?style=for-the-badge&logo=nestjs&logoColor=00F0FF&labelColor=10111A)](./bridge)
-[![Cursor Native CLI](https://img.shields.io/badge/ENGINE-CURSOR_AGENT_CLI-FF2A85?style=for-the-badge&labelColor=10111A)](./SPEC.md)
-[![Tests 31/31 Passing](https://img.shields.io/badge/VITEST-31%2F31_PASSING-10F59B?style=for-the-badge&logo=vitest&labelColor=10111A)](./bridge/test)
-[![License Apache-2.0](https://img.shields.io/badge/LICENSE-APACHE_2.0-A855F7?style=for-the-badge&labelColor=10111A)](./LICENSE)
+[![Release](https://img.shields.io/badge/RELEASE-v0.5.2-D4FF00?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases)
+[![Mac Installer](https://img.shields.io/badge/MACOS_INSTALLER-cuss.dmg-00F0FF?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases)
+[![Android APK](https://img.shields.io/badge/ANDROID_APP-cuss.apk-FF2A85?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases)
+[![Tests](https://img.shields.io/badge/VITEST-31%2F31_PASSING-10F59B?style=for-the-badge&labelColor=07070C)](#verification-and-test-suite)
 
 </div>
 
 ---
 
-## ⚡ Star Feature Tiles
+## Overview and Why CUSS Exists for Developers
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <h3>🧬 01 // Zero-API-Key Mac Umbilical</h3>
-      <p>Drives <code>/Applications/Cursor.app/Contents/Resources/app/bin/cursor agent</code> directly on your Mac using your logged-in Cursor Ultra/Pro account. <b>Works even when the Cursor desktop GUI window is closed.</b></p>
-    </td>
-    <td width="33%" valign="top">
-      <h3>🎛️ 02 // Full 5-Mode Composer &amp; Model Matrix</h3>
-      <p>Switch between <b>Agent</b>, <b>Plan</b>, <b>Ask</b>, <b>Debug</b>, and <b>Multitask</b>. Defaults to <b>Auto</b> with <b>Grok 4.7 / 4.6 / 4.5</b>, <b>Composer 2.5</b>, <b>Codex 5.3</b>, and <b>Claude Opus 5.5 / 5</b> pinned at the top + 4D Effort/Context/Fast/Thinking toggles.</p>
-    </td>
-    <td width="33%" valign="top">
-      <h3>👁️ 03 // Universal In-App File Renderer</h3>
-      <p>Tap <b>any file</b> anywhere in CUSS (<code>@file</code> chips, inline code paths, tool calls, Git Diff rows, Context Explorer) to view &amp; render <b>Markdown</b>, <b>CSV/TSV grids</b>, <b>Images</b>, <b>Source Code with live search</b>, or <b>Binary hex dumps</b> right on your phone.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="33%" valign="top">
-      <h3>🌿 04 // Live Git Studio &amp; Worktrees</h3>
-      <p>Inspect uncommitted files, view color-coded unified diffs, switch or create Git branches (<code>checkout -b</code>), stage &amp; commit changes, and run <code>git pull</code> / <code>git push</code> directly from Android.</p>
-    </td>
-    <td width="33%" valign="top">
-      <h3>🔐 05 // Terminal, GCP OAuth &amp; Mac Screen Peek</h3>
-      <p>Run unrestricted Zsh/CLI commands (<code>--force --sandbox disabled --approve-mcps</code>). Detects OAuth URLs (e.g. <code>gcloud auth login</code>) so you can authenticate in <b>Android Chrome/Brave</b> or open on your Mac and watch via <b>Mac Live Screen Peek</b>.</p>
-    </td>
-    <td width="33%" valign="top">
-      <h3>💾 06 // Saved on Android + Motion Craft</h3>
-      <p>All chat sessions and full message transcripts persist locally on your Android device via <code>expo-file-system</code>. Built with 100% custom display typography (<b>LC Mogi</b>, <b>Unbounded</b>, <b>Syne</b>, <b>Space Grotesk</b>, <b>Space Mono</b>) and 3-layer choreography.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="33%" valign="top">
-      <h3>⌨️ 07 // Live Remote Keyboard (Phone → Any Mac Window)</h3>
-      <p>Open <b>MAC LIVE MIRROR</b>, tap any text field on the mirrored screen (Cursor chat, Google search, Slack, Terminal…), and start typing on your phone: every keystroke lands <b>live</b> in that Mac window within ~5ms over WebSocket (<code>mirror:input</code> → persistent native <code>CGEvent</code> daemon with full Unicode/emoji, backspace mirroring, and <b>Enter = real Return key</b> so it submits exactly like a physical keyboard).</p>
-    </td>
-    <td width="33%" valign="top">
-      <h3>🖱️ 08 // Touch-to-Control Mac Mirror</h3>
-      <p>Flicker-free double-buffered live Mac display stream with <b>click / double-click / right-click / move / scroll</b> on touch, plus a 20-key shortcut bar (<code>Cmd+A/C/V/Z/S/L/K</code>, <code>Cmd+Tab</code>, <code>Cmd+Space</code>, arrows, <code>Shift+Enter</code>) and a launcher for every running &amp; installed Mac app.</p>
-    </td>
-    <td width="33%" valign="top">
-      <h3>⚡ 09 // Zero-Terminal Mac Menu Bar</h3>
-      <p>Native <code>/Applications/CUSS Menu.app</code> (<b>⚡ CUSS</b> in the top menu bar) keeps the Bridge (<code>4040</code>) and Expo Go server (<code>8081</code>) alive as macOS LaunchAgents, shows a scannable Expo QR code HUD, and syncs your Cursor Desktop login into <code>~/.cursor/auth.json</code> automatically.</p>
-    </td>
-  </tr>
-</table>
+Modern AI-assisted software development happens inside **Cursor** on a developer's workstation, where local repositories, Git credentials, SSH keys, Docker containers, MCP servers, and CLI tools live. However, the moment a developer steps away from their desk, they lose visibility and control over long-running agent tasks, test suites, Git branches, and browser OAuth flows.
+
+**CUSS** solves this by turning your Android phone into a direct, low-latency remote control deck for your Mac's Cursor environment:
+
+1. **Zero API Keys Required**: CUSS drives `/Applications/Cursor.app/Contents/Resources/app/bin/cursor agent` directly using your existing Cursor Pro or Ultra subscription.
+2. **Works Even When the Cursor Desktop Window Is Closed**: Because the Mac bridge spawns the standalone `cursor-agent` binary headlessly in your project directory, you can spawn new sessions, stream token-by-token responses, and edit files on your Mac without keeping the Cursor GUI open.
+3. **Zero-Terminal Background Operation**: The macOS installer (`cuss.dmg`) installs a native macOS Menu Bar companion (`/Applications/CUSS Menu.app`) and `launchd` background services that keep the Mac Bridge (`:4040`) running automatically on login.
 
 ---
 
-## 🧠 How CUSS Works Without Cursor Open on Your Mac
+## Visual Walkthrough: macOS Installer, Menu Bar App, and Mobile Control Deck
 
-You **never** need the `Cursor.app` GUI window open on your Mac to use CUSS from your phone:
+### 1. Self-Contained macOS Installer (`cuss.dmg` -> `Install CUSS.app`)
 
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 📱 ANDROID PHONE (Expo Go — CUSS Mobile Deck)                           │
-│  • Landing Brand Stage -> Dashboard (3D Three.js Agent Field)           │
-│  • Single-Box Live Streaming Chat + Collapsible Thought Process         │
-│  • Local Android Persistence (Paths.document/cuss-chat-<id>.json)       │
-│  • In-App File Renderer · Git Studio · Voice Mic · Context Explorer     │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                │ REST + WebSocket (/ws)
-                                │ Over Wi-Fi (LAN) or Tailscale (Anywhere)
-                                ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 💻 MAC BRIDGE (bridge/ — NestJS on Port 4040)                           │
-│  • Bearer Pairing-Token Guard (constant-time verification + QR code)    │
-│  • Spawns headless CLI: /Applications/Cursor.app/.../bin/cursor agent   │
-│  • Reads ~/.cursor/projects/*/agent-transcripts/<id>/<id>.jsonl         │
-│  • Reads globalStorage/storage.json, ide_state.json, mcp.json & plans   │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                │ NDJSON Stream (--output-format stream-json)
-                                ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ ⚙️ HEADLESS CURSOR AGENT CLI + MAC WORKSPACE                            │
-│  • Uses your Mac's `cursor agent login` session (Zero API keys!)        │
-│  • Full PATH access: git, gcloud, bq, node, python, homebrew, MCPs      │
-│  • Shared disk transcripts: chats seamlessly resume in Cursor IDE/CLI   │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="./assets/screenshots/cuss-installer.png" alt="CUSS macOS Installer" width="49%" />
+  <img src="./assets/screenshots/cuss-pairing-qr.png" alt="CUSS Installer Pairing QR" width="49%" />
+</p>
+
+- **Left**: Opening `cuss.dmg` and launching `Install CUSS.app` presents a native macOS Core Animation installer. Clicking **INSTALL CUSS** installs a bundled Node 22 (`arm64`) runtime, the NestJS Mac Bridge, precompiled native CoreGraphics/Accessibility helpers (`cuss-mac-input`, `cuss-mac-speech`), and `/Applications/CUSS Menu.app`. Target Macs do not need Node.js, npm, Xcode, or Terminal preinstalled.
+- **Right**: Once installation completes, the installer automatically syncs your Cursor Desktop credentials, starts the background `com.cuss.bridge` and `com.cuss.menubar` LaunchAgents, verifies that port `4040` is healthy, and renders an instant **Pairing QR Code** on screen.
 
 ---
 
-## 🛠️ Developer Setup (Mac + Android Expo Go)
+### 2. Native macOS Menu Bar Companion (`CUSS Menu.app`)
 
-### Prerequisites
-1. **macOS** with [Cursor](https://cursor.com) installed at `/Applications/Cursor.app` and **Node.js 20+**.
-2. **Android phone** (or iOS device) with the **Expo Go** app installed from Google Play / App Store.
-3. *(Optional for remote access outside home Wi-Fi)* [Tailscale](https://tailscale.com) installed on both your Mac and Android phone.
+<p align="center">
+  <img src="./assets/screenshots/cuss-menubar-hud.png" alt="CUSS macOS Menu Bar and Pairing HUD" width="100%" />
+</p>
+
+- **How It Works**: Lives permanently in the top-right macOS status bar (`CUSS`). It polls the local bridge health endpoint (`http://127.0.0.1:4040/api/health`), monitors the optional Expo Go development bundler (`:8081`), and reads your active Cursor account from `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`.
+- **How to Use It**:
+  - Click **CUSS** in the top macOS menu bar at any time.
+  - Click **Pair Phone — Show QR Code & Control HUD** to display the scannable pairing QR code (`missioncontrol://pair?url=...&token=...`) and live network telemetry.
+  - Use **Copy Mac Bridge URL**, **Copy Pairing Token**, **Sync Cursor Desktop Login Now**, or **Restart Background Services** with one click.
 
 ---
 
-### Step 1 — One-Command Launch (Zero Multiple Terminals!)
-Clone the repo and run **`npm start`** at the root — it automatically installs dependencies, starts the Mac Bridge on port `4040` in the background, prints your pairing details, and launches the **Expo Go** server in the **same single terminal**:
+### 3. Mobile Studio Deck: Plan & Usage, Directory Picker, and Zoomable Live Mirror
+
+<p align="center">
+  <img src="./assets/screenshots/cuss-mobile-overview.png" alt="CUSS Mobile Control Deck Overview" width="100%" />
+</p>
+
+---
+
+## Technical Capabilities and How to Use Each Feature
+
+### 01 // Zero-Terminal Cursor Authentication (`state.vscdb` + Mobile PKCE OAuth)
+
+- **Technical Mechanism**:
+  - Cursor's headless `cursor-agent` binary includes a `FileCredentialManager` activated by setting `AGENT_CLI_CREDENTIAL_STORE=file`, which reads `{ accessToken, refreshToken }` from `~/.cursor/auth.json` (`0600`).
+  - On startup, the CUSS Mac Bridge queries `Cursor.app`'s local SQLite state database (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`, table `ItemTable`, keys `cursorAuth/accessToken` and `cursorAuth/refreshToken`) and writes `~/.cursor/auth.json` automatically.
+  - If `Cursor.app` is not signed in on the Mac, the mobile app generates a cryptographic PKCE challenge (`uuid`, `verifier`, SHA-256 base64url `challenge`) in 0.1ms, opens `https://cursor.com/loginDeepControl` in your phone's browser, polls `https://api2.cursor.sh/auth/poll`, and pushes the resulting tokens to `POST /api/local/auth/complete`.
+- **How to Use It**:
+  - If you are already signed into Cursor on your Mac, authentication is automatic on first launch.
+  - If not signed in, tap **SIGN IN TO CURSOR TO CONTINUE** on the mobile landing screen and approve the login in Chrome or Brave on your phone.
+- **Why It Is Useful for Developers**:
+  - Eliminates manual `cursor agent login` terminal steps, SSH key forwarding, or copying API keys onto a mobile device.
+
+---
+
+### 02 // Cursor Settings, Plan Quota, and Spend Telemetry (`GET / POST /api/local/settings`)
+
+- **Technical Mechanism**:
+  - Queries Cursor's `aiserver.v1.DashboardService/GetPlanInfo`, `GetCurrentPeriodUsage`, and `GetHardLimit` endpoints over HTTPS using your local Cursor access token, and merges the response with `~/.cursor/cli-config.json`, `~/Library/Application Support/Cursor/User/settings.json`, `state.vscdb`, and `~/.cursor/mcp.json`.
+- **How to Use It**:
+  - Tap **SETTINGS** in the top bar of the Landing screen, the Sessions Dashboard (`CUSS // SESSIONS`), or any Agent Detail screen.
+  - **PLAN & USAGE Tab**: Inspect your active subscription tier (`ULTRA` / `PRO`), billing cycle reset countdown, three live usage bars (**Total Included Usage %**, **Auto / Composer 2.5 / Grok 4.7 Bucket %**, and **Named Frontier API %**), USD compute spend breakdown (**Included Credit**, **Provider Bonus Credit**, **Total Compute Value Used**, and **On-Demand Hard Cap status**), the list of models included in the Auto bucket, and total input/output/cache-read tokens across your local CUSS sessions.
+  - **GENERAL & DIR Tab**: Toggle Cursor CLI flags (`Max Mode`, `Disable Sandbox`, `Auto-Accept Web Search`, `Attribute Git Commits`, `Attribute PRs`, `Notifications`, `Vim Mode`) and Cursor Desktop editor preferences (`Git Autofetch`, `Terminal Inline Images`, `Auto-Detect OS Color Scheme`, `Format On Save`) — every toggle writes directly to `~/.cursor/cli-config.json` or `settings.json` on your Mac.
+  - **MODELS & DEFAULTS Tab**: Configure your default execution mode, model family, reasoning effort, context window (`auto`, `256k`, `1M`), Fast mode, and Extended Thinking.
+  - **PRIVACY & PLANS Tab**: Verify `PRIVACY_MODE_NO_TRAINING` / `Ghost Mode` status and open any saved Cursor architecture plan (`~/.cursor/plans/*.md`) in the in-app file viewer.
+  - **MCP & BRIDGE Tab**: Inspect all configured MCP servers from `~/.cursor/mcp.json` and manage bridge pairing.
+- **Why It Is Useful for Developers**:
+  - Gives complete visibility into Cursor quota consumption and lets you switch to Auto-bucket models (`Auto`, `Composer 2.5`, `Grok 4.7`) before hitting named API limits.
+
+---
+
+### 03 // Mac Working Directory Selector and Folder Browser (`DirectoryPickerModal`)
+
+- **Technical Mechanism**:
+  - Combines automatic repository discovery (`discoverLocalProjects()` scanning active Cursor workspaces, `~/.cursor/projects`, Git worktrees, and `~/Downloads`) with a live filesystem directory browser (`GET /api/local/browse-dirs?path=...`) that detects `.git` repositories and active branch names.
+  - Persists your chosen `selectedCwd` on the Android device (`cuss-device-state-v1.json`) and pre-populates new agent spawns.
+- **How to Use It**:
+  - **On the Main Landing Page (after Sign-In)**: Tap the **WORK DIR / SELECT DIR** row in the telemetry card to pick a discovered repository or browse any folder on your Mac (`~`, `Downloads`, parent `..`, or custom path). Tap **SPAWN AGENT IN <DIR>** to launch an agent directly in that directory.
+  - **On the Sessions Dashboard (`CUSS // SESSIONS`)**: Tap the Working Directory bar beneath the header to switch directories at any time, toggle **THIS DIR / ALL DIRS** to filter sessions by directory, or tap **SPAWN** to start a new chat in the selected folder.
+- **Why It Is Useful for Developers**:
+  - Lets you hop across multiple repositories, monorepo packages, or Git worktrees from your phone without touching the Mac.
+
+---
+
+### 04 // 5-Mode Cursor Composer, Model Matrix, and `@file` Context Vault
+
+- **Technical Mechanism**:
+  - Replicates Cursor's five execution modes (`Agent`, `Plan`, `Ask`, `Debug`, `Multitask`) and passes the corresponding CLI flags and structured mode instructions to `cursor-agent --print --output-format stream-json --stream-partial-output --force --sandbox disabled --approve-mcps`.
+  - Pre-warms chat session UUIDs (`create-chat`) in the background so dispatching a prompt begins streaming in milliseconds.
+- **How to Use It**:
+  - Select your mode pill (`AGENT`, `PLAN`, `ASK`, `DEBUG`, `MULTITASK`) and model (`Auto`, `Grok 4.7`, `Composer 2.5`, `Codex 5.3`, `Claude Opus`, etc.) in the bottom-pinned composer.
+  - Tap **`@`** (or type `@filename`) to search workspace files via `GET /api/local/files` and attach `@file` context chips to your turn.
+  - Tap the **Context Gauge (`%`)** pill to open the 9-category **Prompt Context Usage Explorer** (*System Prompt*, *Tool Definitions*, *Rules*, *Skills*, *MCP Servers*, *Subagents*, *Attached `@Files`*, *Prompt Cache*, and *Active Conversation*).
+- **Why It Is Useful for Developers**:
+  - Provides the same granular control over model selection, reasoning effort, context window, and file grounding as the desktop IDE.
+
+---
+
+### 05 // Zoomable Flicker-Free Mac Live Mirror and Pointer-Targeted Live Scroll
+
+- **Technical Mechanism**:
+  - **Single-Flight Atomic Capture**: The bridge captures the Mac display (`/usr/sbin/screencapture -x -C -t jpg`, including the live system cursor) into a staging file and atomically renames it, streaming base64 frames over WebSocket (`mirror:subscribe` -> `mirror:frame`).
+  - **GPU Double-Buffered Canvas**: The mobile `DoubleBufferedMirrorCanvas` maintains two stacked `<Image>` buffers (Slot A and Slot B) and swaps visibility only inside `onLoad` after decoding finishes, eliminating frame flicker.
+  - **2-Finger Pinch-to-Zoom (`1x` – `4x`) & Matrix Inversion**: Pinching with two fingers scales (`1.0x` to `4.0x`) and pans the viewport. Every touch event inverts the `(translateX, translateY, scale)` transformation matrix before mapping to normalized Mac screen coordinates `(nx, ny) in [0, 1]`.
+  - **Native CoreGraphics Pointer & Scroll Daemon (`cuss-mac-input.swift`)**: A persistent native Swift daemon reads commands over stdin (`click`, `doubleclick`, `rightclick`, `move`, `moverel`, `scrollat <nx> <ny> <dy> <dx>`), warps the Mac cursor (`CGWarpMouseCursorPosition`), and posts both `.line` and `.pixel` `CGEvent` scroll wheel events to the window under your finger in ~1ms.
+- **How to Use It**:
+  - Inside any chat session, tap **LIVE MIRROR** in the top bar (and optionally **FULL SCREEN**).
+  - **Switch Any Mac App**: Tap any running app in the **OPEN APPS ON MAC NOW** strip, or tap **ALL MAC APPS** to launch/focus any application in `/Applications`.
+  - **Zoom In**: Pinch with **2 fingers** on the mirror (or tap the **ZOOM: `1x` / `1.5x` / `2x` / `3x` / `4x`** pills) to inspect small UI elements. Use **PAN ZOOMED VIEW** to pan around with one finger when zoomed in.
+  - **Scroll & Click with `TRACKPAD (TAP + DRAG SCROLL)`**:
+    - **Tap 1 finger** anywhere on the mirror to click that exact spot on the Mac.
+    - **Drag 1 finger up/down/left/right** on the mirror to move the Mac pointer to that window and **live-scroll the Mac window under your finger in real time**.
+    - **Long-press (440ms)** to right-click.
+- **Why It Is Useful for Developers**:
+  - Lets you inspect browser previews, scroll through long files or logs in Cursor/Chrome/Terminal, click OAuth consent buttons, and interact with any Mac GUI window from your phone.
+
+---
+
+### 06 // Live Remote Keyboard with Focused-Field Accessibility Echo (`MacRemoteKeyboard`)
+
+- **Technical Mechanism**:
+  - **Per-Keystroke Diff Streaming**: In `LIVE: ON` mode, `onChangeText` diffs the previous and current input strings and streams minimal `type-text` (base64 UTF-8) and `backspace` commands over the WebSocket `mirror:input` fast path (~5ms round-trip with `mirror:input:ack` latency telemetry) into a strictly serialized queue (`macInputChain`).
+  - **Native Unicode Injection**: `cuss-mac-input` injects UTF-16 code units via `CGEvent.keyboardSetUnicodeString`, supporting full Unicode, symbols, and punctuation. Pressing **Enter** on the phone keyboard sends virtual key code `36` (`Return`), submitting prompts or search boxes on the Mac.
+  - **Focused-Field Echo & Secure Lock**: Queries macOS Accessibility (`AXUIElementCopyAttributeValue` for `kAXFocusedUIElementAttribute`, with automatic `AXManualAccessibility` opt-in for Electron/Chromium apps) to display the focused field's role, title, and live text value with a blinking caret directly beneath the phone input. When `AXSecureTextField` is detected, echo is disabled and the phone input switches to `secureTextEntry`.
+- **How to Use It**:
+  - Open **LIVE MIRROR**, tap any text input on the mirrored Mac screen (Cursor composer, Google search bar, Slack, Terminal), and type in the phone's **LIVE KEYBOARD** input box.
+  - Press **Enter / Send** on your phone keyboard to trigger Return on the Mac (or cycle **ENTER: AUTO / Return / Cmd+Return / Shift+Return** per app).
+  - Use **UNDO** to reverse your last typed burst, **PASTE PHONE -> MAC** (`pbcopy` + `Cmd+V`), **COPY MAC -> PHONE** (`pbpaste`), **DICTATE -> MAC** (voice transcription via `cuss-mac-speech` / `SFSpeechRecognizer`), or the **Per-App Quick Action Rails** (for Cursor, VS Code, Chrome, Safari, Terminal, Slack, Finder, and Notes).
+- **Why It Is Useful for Developers**:
+  - Turns your phone into a real-time wireless keyboard, voice dictation mic, and shortcut deck for any focused Mac application.
+
+---
+
+### 07 // Universal In-App File Viewer, Live Git Studio, and Mac Zsh Terminal
+
+- **Universal File Viewer (`FileViewerModal`)**:
+  - **How to Use**: Tap any `@file` chip, inline file path in assistant prose, tool-call file card, or changed file in Git Studio.
+  - **What It Renders**: Syntax-highlighted source code with line numbers and live line search, rendered Markdown previews, formatted CSV/TSV data tables, inline images (`png`/`jpg`/`webp`/`gif`), or binary hex/metadata views.
+- **Live Git Studio (`GET /api/local/git-diff` & `POST /api/local/git-action`)**:
+  - **How to Use**: Tap **GIT** in the top bar of any Mac agent session.
+  - **Capabilities**: View uncommitted changed files (`M`, `A`, `D`, `??`), inspect color-coded unified diffs, switch branches, create new branches (`checkout -b`), write a commit message to stage & commit (`git add -A && git commit`), and run `git pull` / `git push`.
+- **Unrestricted Mac Shell & OAuth Link Catcher (`POST /api/local/exec-shell`)**:
+  - **How to Use**: Tap **SHELL / GCP** in the top bar to run one-tap presets (`git status`, `gcloud auth status`, `gcloud config list`, `npm test`) or arbitrary `zsh` commands in the workspace directory.
+  - **OAuth Detection**: Automatically extracts `https://...` login URLs from command output so you can open them in your phone browser or on the Mac browser.
+
+---
+
+## Installation Guide: End Users (`cuss.dmg` + `cuss.apk`)
+
+Download both artifacts from the [**GitHub Releases page**](https://github.com/negativenagesh/cuss/releases):
+
+1. **Install on macOS (`cuss.dmg`)**:
+   - Open **`cuss.dmg`** and double-click **`Install CUSS`** (on first launch, right-click -> **Open** to bypass Gatekeeper for ad-hoc signed builds).
+   - Click **INSTALL CUSS**. The installer sets up the bundled Node 22 runtime, the Mac Bridge (`:4040`), precompiled native helpers, and **`/Applications/CUSS Menu.app`** (`CUSS` in your top menu bar).
+   - When macOS prompts for permissions, allow **Accessibility** (for Live Keyboard injection and focused-field echo) and **Screen Recording** (for Live Mirror capture) for `node`.
+2. **Install on Android (`cuss.apk`)**:
+   - Download and install **`cuss.apk`** on your Android phone.
+   - Open **CUSS** on your phone. If your phone and Mac are on the same Wi-Fi LAN, CUSS auto-discovers and pairs with your Mac bridge; or tap **SCAN** and point your camera at the QR code shown in the macOS installer or in **CUSS -> Pair Phone** in the Mac menu bar.
+
+---
+
+## Developer Setup and Building from Source
 
 ```bash
-cd ~/Downloads
 git clone https://github.com/negativenagesh/cuss.git
 cd cuss
 
-# Starts BOTH the Mac Bridge (port 4040) and Expo Go in ONE terminal:
+# Start both the Mac Bridge (:4040) and Expo Go bundler (:8081) in one command:
 npm start
-```
 
-*(Optional)* Want a **native macOS Menu Bar app (`⚡ CUSS` in your top Mac menu bar)** and background daemon that auto-starts whenever you log into your Mac without any terminal open?
-```bash
+# Install permanent macOS LaunchAgents + /Applications/CUSS Menu.app:
 npm run menubar:install
-npm run service:install
+
+# Rebuild native Swift helpers (cuss-mac-input and cuss-mac-speech):
+npm run native:build
+
+# Build the self-contained macOS installer disk image (dist/cuss.dmg):
+npm run dmg
+
+# Trigger a standalone Android APK build on Expo EAS (requires `npx eas-cli login`):
+npm run apk
 ```
-This installs **`/Applications/CUSS Menu.app`** in your top macOS status bar (`⚡ CUSS`) with 1-click access to your live LAN URL, Pairing Token, Pairing HUD Window, Bridge Restart, and Zero-Terminal Cursor Auth Sync.
 
 ---
 
-### Step 2 — Zero-Terminal Cursor Authentication & Phone Browser Sign-In
-1. **Automatic Desktop Token Sync (`state.vscdb` → `~/.cursor/auth.json`)**:
-   - Using REA (`ev_06eeca4a...`), we reverse-engineered Cursor's `FileCredentialManager` (`AGENT_CLI_CREDENTIAL_STORE=file` reading `~/.cursor/auth.json`).
-   - On startup, the bridge automatically imports `cursorAuth/accessToken` and `cursorAuth/refreshToken` from `Cursor.app`'s SQLite database (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`) into `~/.cursor/auth.json` — **you never need to open Terminal or run `cursor agent login`**.
-2. **Direct Phone Browser OAuth (`SIGN IN TO CURSOR TO CONTINUE`)**:
-   - Even if `Cursor.app` isn't logged in on your Mac, tapping **`SIGN IN TO CURSOR TO CONTINUE`** on your Android phone generates a PKCE challenge (`https://cursor.com/loginDeepControl?...`) at `t = 0ms`, opens Chrome/Brave on your phone, polls `https://api2.cursor.sh/auth/poll`, and pushes `{ accessToken, refreshToken }` to `POST /api/local/auth/complete` (`~/.cursor/auth.json`).
+## Verification and Test Suite
 
----
+Run the full test and static type-verification suite from the repository root:
 
-## 📦 Install for Everyone — `cuss.dmg` (Mac) + `cuss.apk` (Android)
-
-No Node, no npm, no terminal, no Xcode on the target Mac. Two files:
-
-| File | What it does |
-| :--- | :--- |
-| **`dist/cuss.dmg`** (~60 MB) | Mount → double-click **Install CUSS**. A native Core Animation installer (crest draw-on, staggered **CUSS** wordmark, live progress rail, particle burst) installs a bundled **Node 22 runtime + Mac Bridge + precompiled native helpers** into `~/Library/Application Support/CUSS`, drops **`/Applications/CUSS Menu.app`** into your menu bar, writes the `com.cuss.bridge` / `com.cuss.menubar` LaunchAgents, syncs your Cursor Desktop login, waits for `:4040` to come online, then shows the **pairing QR**. Requires Apple Silicon + Cursor.app. First launch: right-click → **Open** (ad-hoc signed, not notarized). |
-| **`dist/cuss.apk`** | Native Android build of the phone app (brand icon, adaptive icon, splash). Install → open → **SCAN** the QR from the installer or from **⚡ CUSS → Pair Phone** in the menu bar. |
-
-When macOS asks, allow **Accessibility** and **Screen Recording** for **node** — this powers the Live Keyboard field echo and the Live Mirror.
-
-Build them yourself:
 ```bash
-npm run dmg      # → dist/cuss.dmg   (needs Xcode Command Line Tools on the build Mac)
-npm run apk      # → EAS cloud build (npx eas-cli login once)
-npm run apk:download
+npm test
 ```
 
----
-
-## ⌨️ Remote Keyboard v2 — type from your phone into any Mac window
-
-Open **MAC LIVE MIRROR** → tap a text field on the mirrored screen → type. Every keystroke streams over WebSocket (`mirror:input`) into a persistent native `CGEvent` daemon (`bridge/native/cuss-mac-input.swift`), strictly ordered, full Unicode/emoji, ~5 ms.
-
-| Feature | How it works |
-| :--- | :--- |
-| **Focused-field echo** | Accessibility snapshot of the Mac's focused element (`AXFocusedUIElement`, Electron apps via `AXManualAccessibility`) shows role, title, and the live field value with a blinking caret under your phone input. |
-| **Secure-field lock** | `AXSecureTextField` → magenta lock, echo disabled, phone input switches to `secureTextEntry`, nothing logged. |
-| **Field-aware Enter** | Per-app Enter policy (`AUTO` / `⏎` / `⌘⏎` / `⇧⏎`) remembered on the device, so Enter in Slack sends while Enter in an editor adds a line. |
-| **Undo last burst** | One tap reverses the last typed burst (backspaces + restores deleted text). |
-| **Latency HUD** | p50 round-trip of the last 20 acks, color-coded (green < 80 ms). |
-| **Clipboard bridge** | Phone → Mac via `pbcopy` + `⌘V` (one keystroke for long text); Mac → Phone via `pbpaste`. |
-| **Dictate → Mac** | Phone mic → `SFSpeechRecognizer` helper (`cuss-mac-speech`) → typed live into the focused field. |
-| **Trackpad mode** | Drag = relative cursor motion, tap = click, long-press = right-click, two fingers = pixel scroll, with ripple feedback. |
-| **Per-app quick actions** | Rails for Cursor, VS Code, Chrome/Brave/Arc/Safari, Terminal/iTerm/Warp/Ghostty, Slack/Discord, Finder, Notes + 40 native key combos. |
-| **Snippets** | Save any typed text as a reusable chip (long-press to delete). |
-
----
-
-## 🎨 Design System & Motion Architecture (`@motion-design`)
-
-| Layer / Role | Implementation Details |
-| :--- | :--- |
-| **Typography** | **LC Mogi** (`LCMogi-A/B/C/VF`) for liquid-brutalist hero wordmarks · **Unbounded** & **Syne** for geometric display headers · **Space Grotesk** for chat prose · **Space Mono** for code, diffs, paths, and token telemetry. |
-| **Color Palette** | **Obsidian Void** (`#07070C`) · **Synth Surface** (`#10111A`) · **Acid Lime** (`#D4FF00`) · **Electric Cyan** (`#00F0FF`) · **Hyper Magenta** (`#FF2A85`) · **Ultraviolet** (`#A855F7`) · **Solar Amber** (`#FFB703`). |
-| **Motion Craft** | Built on `LottieFiles/motion-design-skill`: **MD3 Emphasized Decelerate** (`cubic-bezier(0.05, 0.7, 0.1, 1)`) entrances, **Disney Anticipation + Squash/Overshoot** (`SpringButton`), and **`CussSmallArtLoader`** (Lottie cyber-core + 5-bar staggered wave equalizer + live `0.1s` timer) during every wait state. |
-| **Context Explorer** | Replicates Cursor IDE's 9-category `PromptContextUsageTree`: *System Prompt*, *Tool Definitions*, *Rules*, *Skills*, *MCP Servers*, *Subagents*, *Attached & Read `@Files`*, *Prompt Cache*, and *Active Conversation*. |
-
----
-
-## 🧪 Verification & Test Results
-
-| Suite / Check | Command | Result |
+| Check | Command | Status |
 | :--- | :--- | :--- |
-| **Bridge Unit & Integration Tests** | `cd bridge && npm test` | **4 test files · 31/31 tests passing** (`auth.spec.ts`, `cursor-api.spec.ts`, `local-agent.spec.ts`, `model-catalog.spec.ts`) |
-| **Bridge TypeScript Strict Check** | `cd bridge && npx tsc --noEmit` | **0 errors** |
-| **Mobile TypeScript Strict Check** | `cd mobile && npx tsc --noEmit` | **0 errors** |
-| **Expo Android Production Bundle** | `cd mobile && npx expo export --platform android` | **Clean Hermes bytecode bundle (`.hbc`) + 10 bundled TTF fonts verified** |
+| **Bridge Unit & Integration Tests** | `npm --prefix bridge test` | **4 test suites · 31/31 tests passing** (`auth.spec.ts`, `cursor-api.spec.ts`, `local-agent.spec.ts`, `model-catalog.spec.ts`) |
+| **Bridge TypeScript Strict Check** | `./bridge/node_modules/.bin/tsc -p bridge/tsconfig.json --noEmit` | **0 errors** |
+| **Mobile TypeScript Strict Check** | `./mobile/node_modules/.bin/tsc -p mobile/tsconfig.json --noEmit` | **0 errors** |
+| **Expo Doctor Validation** | `cd mobile && npx expo-doctor` | **21/21 checks passed** |
 
 ---
 
-## 📂 Repository Structure
+## License
 
-```text
-cuss/
-├── assets/
-│   └── cuss-banner.svg                 # Bespoke Neo-Y2K brutalist vector brand banner
-├── bridge/                             # Mac NestJS + WebSocket + Cursor CLI Bridge (Port 4040)
-│   ├── src/
-│   │   ├── main.ts                     # Bridge bootstrap, LAN/Tailscale QR generator
-│   │   ├── local-agent.ts              # Headless `cursor agent` runner, Git, Shell, Screen & Speech
-│   │   ├── local-agents.controller.ts  # REST endpoints (/api/local/*)
-│   │   ├── model-catalog.ts            # 4D Model Matrix, IDE state, JSONL parser & File Reader
-│   │   ├── live.gateway.ts             # Real-time WebSocket (/ws) event multiplexor
-│   │   ├── cursor-api.ts               # Optional Cursor Cloud Agents v1 client
-│   │   └── auth.guard.ts               # Constant-time Bearer pairing-token guard
-│   └── test/                           # 31 Vitest unit & integration specs
-├── mobile/                             # Expo SDK 55 / React Native Android & iOS App
-│   ├── App.tsx                         # Custom font loader & navigation stack
-│   ├── assets/fonts/                   # Bundled LC Mogi, Unbounded, Syne, Space Grotesk & Space Mono
-│   └── src/
-│       ├── store.ts                    # Zustand state + Android device persistence (expo-file-system)
-│       ├── theme.ts                    # CUSS color palette & @motion-design constants
-│       ├── api/                        # REST client.ts & auto-reconnecting WebSocket live.ts
-│       ├── components/
-│       │   ├── CussArt.tsx             # Lottie Cyber-Core, CussSmallArtLoader & Synth Wave Bars
-│       │   ├── CussIcons.tsx           # SpringButton, Context Ring & custom vector icons
-│       │   ├── CursorComposer.tsx      # 5-Mode switcher, 4D Model Matrix, @File drawer & Voice Mic
-│       │   ├── ContextUsageSheet.tsx   # 9-Category Cursor Context Window Explorer
-│       │   ├── MarkdownRenderer.tsx    # AST Markdown, ThinkingAccordion, ToolCallBlock & FileViewerModal
-│       │   ├── WorkspaceVaultDropdown.tsx # Sculptural IDE Vault & Mac Disk Tree navigator
-│       │   └── AgentField.tsx          # 3D Three.js / WebGL orbital agent reactor
-│       └── screens/
-│           ├── LandingScreen.tsx       # Centered artistic CUSS monolith & Explore Studio entry
-│           ├── DashboardScreen.tsx     # Live sessions, 3D reactor, IDE sync, Rename & Delete
-│           ├── AgentDetailScreen.tsx   # Single-box streaming chat, Git Studio, Shell/GCP & Mac Peek
-│           ├── CreateAgentScreen.tsx   # Workspace Vault picker & agent launcher
-│           └── PairScreen.tsx          # QR reticle scanner & manual LAN/Tailscale pairing
-├── SPEC.md                             # Reverse-engineering & protocol specification
-├── plan.md                             # Design, typography & motion architecture blueprint
-└── REA-TASK.md                         # REA verification notes
-```
-
----
-
-## 📄 License
-
-Licensed under the **Apache License 2.0** — see [`LICENSE`](./LICENSE) for details.
+MIT
