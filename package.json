@@ -8,6 +8,6 @@
     "tunnel": "bash ./start-cuss.sh --tunnel",
     "service:install": "bash ./start-cuss.sh --install-service",
     "service:uninstall": "bash ./start-cuss.sh --uninstall-service",
-    "test": "npm --prefix bridge test && npx --prefix bridge tsc --noEmit && npx --prefix mobile tsc --noEmit"
+    "test": "npm --prefix bridge test && ./bridge/node_modules/.bin/tsc -p bridge/tsconfig.json --noEmit && ./mobile/node_modules/.bin/tsc -p mobile/tsconfig.json --noEmit"
   }
 }

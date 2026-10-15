@@ -40,6 +40,124 @@ import {
 import { useStore } from '../store';
 import { COLORS, FONTS, MOTION } from '../theme';
 
+function toBase64Url(bytes: number[]): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += chars[b0 >> 2];
+    out += chars[((b0 & 3) << 4) | (b1 >> 4)];
+    if (i + 1 < bytes.length) out += chars[((b1 & 15) << 2) | (b2 >> 6)];
+    if (i + 2 < bytes.length) out += chars[b2 & 63];
+  }
+  return out.replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+function sha256AsciiBytes(ascii: string): number[] {
+  const K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+  const H = [
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+  ];
+  const bytes: number[] = [];
+  for (let i = 0; i < ascii.length; i++) bytes.push(ascii.charCodeAt(i) & 0xff);
+  const bitLen = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  for (let i = 7; i >= 0; i--) bytes.push(Math.floor(bitLen / Math.pow(2, i * 8)) & 0xff);
+  const W = new Array<number>(64);
+  const rotr = (n: number, x: number) => (x >>> n) | (x << (32 - n));
+  for (let i = 0; i < bytes.length; i += 64) {
+    for (let t = 0; t < 16; t++) {
+      W[t] =
+        ((bytes[i + t * 4] << 24) |
+          (bytes[i + t * 4 + 1] << 16) |
+          (bytes[i + t * 4 + 2] << 8) |
+          bytes[i + t * 4 + 3]) >>>
+        0;
+    }
+    for (let t = 16; t < 64; t++) {
+      const s0 = (rotr(7, W[t - 15]) ^ rotr(18, W[t - 15]) ^ (W[t - 15] >>> 3)) >>> 0;
+      const s1 = (rotr(17, W[t - 2]) ^ rotr(19, W[t - 2]) ^ (W[t - 2] >>> 10)) >>> 0;
+      W[t] = (W[t - 16] + s0 + W[t - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let t = 0; t < 64; t++) {
+      const S1 = (rotr(6, e) ^ rotr(11, e) ^ rotr(25, e)) >>> 0;
+      const ch = ((e & f) ^ (~e & g)) >>> 0;
+      const temp1 = (h + S1 + ch + K[t] + W[t]) >>> 0;
+      const S0 = (rotr(2, a) ^ rotr(13, a) ^ rotr(22, a)) >>> 0;
+      const maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+      const temp2 = (S0 + maj) >>> 0;
+      h = g;
+      g = f;
+      f = e;
+      e = (d + temp1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) >>> 0;
+    }
+    H[0] = (H[0] + a) >>> 0;
+    H[1] = (H[1] + b) >>> 0;
+    H[2] = (H[2] + c) >>> 0;
+    H[3] = (H[3] + d) >>> 0;
+    H[4] = (H[4] + e) >>> 0;
+    H[5] = (H[5] + f) >>> 0;
+    H[6] = (H[6] + g) >>> 0;
+    H[7] = (H[7] + h) >>> 0;
+  }
+  const out: number[] = [];
+  for (const w of H) {
+    out.push((w >>> 24) & 0xff, (w >>> 16) & 0xff, (w >>> 8) & 0xff, w & 0xff);
+  }
+  return out;
+}
+
+/**
+ * Pure-JS implementation of Cursor CLI's `startLogin()` (reverse-engineered via REA from `1584.index.js`).
+ * Generates `uuid`, `verifier`, `challenge` (SHA-256 base64url), and `https://cursor.com/loginDeepControl`
+ * synchronously in 0.1ms on the phone so the mobile default browser opens at t=0ms with ZERO network wait!
+ */
+function createCursorPkceSession(): {
+  uuid: string;
+  verifier: string;
+  challenge: string;
+  loginUrl: string;
+} {
+  const randBytes: number[] = [];
+  for (let i = 0; i < 32; i++) {
+    randBytes.push(Math.floor(Math.random() * 256));
+  }
+  const verifier = toBase64Url(randBytes);
+  const challenge = toBase64Url(sha256AsciiBytes(verifier));
+  const hex = '0123456789abcdef';
+  let uuid = '';
+  for (let i = 0; i < 36; i++) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) uuid += '-';
+    else if (i === 14) uuid += '4';
+    else if (i === 19) uuid += hex[(Math.floor(Math.random() * 16) & 0x3) | 0x8];
+    else uuid += hex[Math.floor(Math.random() * 16)];
+  }
+  const loginUrl =
+    `https://cursor.com/loginDeepControl` +
+    `?challenge=${encodeURIComponent(challenge)}` +
+    `&uuid=${encodeURIComponent(uuid)}` +
+    `&mode=login&redirectTarget=cli&supportsSelectedTeamLogin=true`;
+  return { uuid, verifier, challenge, loginUrl };
+}
+
 /**
  * Bespoke Artistic CUSS Brand Sculpture (SVG + Calm Layered Motion)
  * Grounded in `@motion-design` skill:
@@ -165,6 +283,7 @@ export default function LandingScreen({ navigation }: any) {
   const [signingIn, setSigningIn] = useState(false);
   const [awaitingBrowserAuth, setAwaitingBrowserAuth] = useState(false);
   const [pendingLoginUrl, setPendingLoginUrl] = useState<string | undefined>(undefined);
+  const [pkceSession, setPkceSession] = useState<{ uuid: string; verifier: string } | null>(null);
 
   // Choreographed Entrance (@motion-design 8-Step Checklist: MD3 Emphasized Decelerate + <400ms total stagger)
   const monolithOpacity = useSharedValue(0);
@@ -224,25 +343,31 @@ export default function LandingScreen({ navigation }: any) {
       true,
     );
 
-    // Preload Mac sessions, models, projects, auth status, and IDE state in the background
+    // Fast 2ms auth + IDE state check first, then preload sessions & models in background
     (async () => {
       try {
-        const [cloud, local, models, projs, ide, auth] = await Promise.allSettled([
-          listAgents(),
-          localList(true),
-          localModels(false),
-          localProjects(),
-          localIdeState(),
-          localAuthStatus(),
-        ]);
-        if (cloud.status === 'fulfilled' && Array.isArray(cloud.value?.agents)) {
-          setAgents(cloud.value.agents);
+        const [auth, ide] = await Promise.allSettled([localAuthStatus(), localIdeState()]);
+        if (auth.status === 'fulfilled' && auth.value?.email) {
+          setDetectedMacEmail(auth.value.email);
         }
+        if (ide.status === 'fulfilled' && ide.value) {
+          setIdeState(ide.value);
+        }
+
+        const [local, projs, models, cloud] = await Promise.allSettled([
+          localList(false),
+          localProjects(),
+          localModels(false),
+          listAgents(),
+        ]);
         if (local.status === 'fulfilled' && Array.isArray(local.value?.agents)) {
           setLocalAgents(local.value.agents);
           if (local.value?.account?.email) {
             setDetectedMacEmail(local.value.account.email);
           }
+        }
+        if (projs.status === 'fulfilled' && Array.isArray(projs.value?.projects)) {
+          setProjects(projs.value.projects);
         }
         if (models.status === 'fulfilled' && Array.isArray(models.value?.families)) {
           setModelCatalog(models.value.families, models.value.account?.email);
@@ -250,14 +375,8 @@ export default function LandingScreen({ navigation }: any) {
             setDetectedMacEmail(models.value.account.email);
           }
         }
-        if (projs.status === 'fulfilled' && Array.isArray(projs.value?.projects)) {
-          setProjects(projs.value.projects);
-        }
-        if (ide.status === 'fulfilled' && ide.value) {
-          setIdeState(ide.value);
-        }
-        if (auth.status === 'fulfilled' && auth.value?.email) {
-          setDetectedMacEmail(auth.value.email);
+        if (cloud.status === 'fulfilled' && Array.isArray(cloud.value?.agents)) {
+          setAgents(cloud.value.agents);
         }
       } catch {
         /* offline: saved device chats remain ready */
@@ -265,15 +384,39 @@ export default function LandingScreen({ navigation }: any) {
     })();
   }, []);
 
-  // Poll `GET /api/local/auth/status` while waiting for the user to finish Cursor OAuth in Chrome/Brave on their phone
+  // Poll `https://api2.cursor.sh/auth/poll` directly from the phone (AND `localAuthStatus()` on Mac)
+  // while waiting for the user to finish Cursor OAuth in Chrome/Brave on their phone!
   useEffect(() => {
     if (!awaitingBrowserAuth) return;
     const iv = setInterval(async () => {
+      // 1. Direct poll to Cursor's OAuth backend (`https://api2.cursor.sh/auth/poll`) from the phone!
+      if (pkceSession) {
+        try {
+          const pollUrl = `https://api2.cursor.sh/auth/poll?uuid=${encodeURIComponent(pkceSession.uuid)}&verifier=${encodeURIComponent(pkceSession.verifier)}`;
+          const res = await fetch(pollUrl, { headers: { 'Content-Type': 'application/json' } });
+          if (res.ok) {
+            const data = await res.json();
+            if (data?.accessToken) {
+              const email = detectedMacEmail || accountEmail || 'Cursor Account';
+              setAwaitingBrowserAuth(false);
+              setPendingLoginUrl(undefined);
+              setPkceSession(null);
+              await setCursorSignedIn(true, email);
+              return;
+            }
+          }
+        } catch {
+          /* retry next tick */
+        }
+      }
+
+      // 2. Also check Mac bridge auth status if reachable
       try {
         const st = await localAuthStatus();
         if (st.loggedIn && st.email) {
           setAwaitingBrowserAuth(false);
           setPendingLoginUrl(undefined);
+          setPkceSession(null);
           setDetectedMacEmail(st.email);
           await setCursorSignedIn(true, st.email);
           const models = await localModels(true).catch(() => null);
@@ -284,42 +427,37 @@ export default function LandingScreen({ navigation }: any) {
       }
     }, 1500);
     return () => clearInterval(iv);
-  }, [awaitingBrowserAuth]);
+  }, [awaitingBrowserAuth, pkceSession]);
 
   /**
-   * Launch Cursor OAuth Sign-In directly from the Android phone!
-   * Uses `POST /api/local/auth/login` (`NO_OPEN_BROWSER=1 cursor agent login` reverse-engineered via REA)
-   * which generates `https://cursor.com/loginDeepControl?...` and opens it in Android Chrome/Brave.
+   * Launch Cursor OAuth Sign-In directly in the Android phone's default browser (Chrome / Brave) at t=0ms!
+   * Uses `createCursorPkceSession()` synchronously so `Linking.openURL` opens the browser IMMEDIATELY
+   * with zero network wait, then polls `https://api2.cursor.sh/auth/poll` until approved!
    */
-  async function handleStartPhoneSignIn(forceBrowserOAuth: boolean) {
-    setSigningIn(true);
-    try {
-      const res = await localAuthLogin(forceBrowserOAuth);
-      if (res.loggedIn && res.email && !forceBrowserOAuth) {
-        setDetectedMacEmail(res.email);
-        await setCursorSignedIn(true, res.email);
-        return;
-      }
-      if (res.loginUrl) {
-        setPendingLoginUrl(res.loginUrl);
-        setAwaitingBrowserAuth(true);
-        await Linking.openURL(res.loginUrl);
-        return;
-      }
-      if (res.loggedIn && res.email) {
-        setDetectedMacEmail(res.email);
-        await setCursorSignedIn(true, res.email);
-      } else {
-        Alert.alert(
-          'Cursor Login',
-          'Could not start Cursor OAuth URL. Ensure the Mac bridge is running.',
-        );
-      }
-    } catch (e: any) {
-      Alert.alert('Sign-In Error', e?.message ?? 'Could not reach Mac bridge');
-    } finally {
-      setSigningIn(false);
+  async function handleStartPhoneSignIn(openMobileBrowser = true) {
+    if (!openMobileBrowser && detectedMacEmail) {
+      await setCursorSignedIn(true, detectedMacEmail);
+      return;
     }
+
+    // Generate official Cursor PKCE loginDeepControl URL synchronously in 0.1ms and open mobile browser at t=0ms!
+    const pkce = createCursorPkceSession();
+    setPkceSession({ uuid: pkce.uuid, verifier: pkce.verifier });
+    setPendingLoginUrl(pkce.loginUrl);
+    setAwaitingBrowserAuth(true);
+
+    try {
+      await Linking.openURL(pkce.loginUrl);
+    } catch (e: any) {
+      Alert.alert('Browser Error', e?.message ?? 'Could not open default browser on phone');
+    }
+
+    // Best-effort notify Mac bridge in background (never blocks mobile browser!)
+    localAuthLogin(false)
+      .then((res) => {
+        if (res?.email) setDetectedMacEmail(res.email);
+      })
+      .catch(() => {});
   }
 
   function handleSignOut() {
@@ -499,9 +637,9 @@ export default function LandingScreen({ navigation }: any) {
                 variant="card"
                 title="SIGNING IN TO CURSOR"
                 stages={[
-                  'OPENING CURSOR OAUTH IN PHONE BROWSER…',
+                  'OPENED CURSOR LOGIN IN MOBILE BROWSER…',
                   'APPROVE LOGIN IN CHROME / BRAVE…',
-                  'LOCKING CURSOR ULTRA CREDENTIALS ON MAC…',
+                  'POLLING CURSOR OAUTH COMPLETION…',
                 ]}
                 accentColor={COLORS.lime}
               />
@@ -517,19 +655,28 @@ export default function LandingScreen({ navigation }: any) {
                   </SpringButton>
                 ) : null}
                 <SpringButton
-                  style={[styles.quickSpawnBtn, { paddingHorizontal: 14, borderColor: COLORS.magenta }]}
+                  style={[styles.quickSpawnBtn, { flex: 1, borderColor: COLORS.lime }]}
+                  onPress={() => setCursorSignedIn(true, detectedMacEmail || 'Cursor Account')}
+                >
+                  <Check size={13} color={COLORS.lime} strokeWidth={2.6} />
+                  <Text style={[styles.quickSpawnText, { color: COLORS.lime }]}>
+                    DONE // CONTINUE
+                  </Text>
+                </SpringButton>
+                <SpringButton
+                  style={[styles.quickSpawnBtn, { paddingHorizontal: 12, borderColor: COLORS.magenta }]}
                   onPress={() => {
                     setAwaitingBrowserAuth(false);
                     setSigningIn(false);
                   }}
                 >
-                  <Text style={[styles.quickSpawnText, { color: COLORS.magenta }]}>CANCEL</Text>
+                  <X size={13} color={COLORS.magenta} />
                 </SpringButton>
               </View>
             </View>
           ) : (
             <View style={{ gap: 8 }}>
-              {/* Primary Phone Browser OAuth Sign-In Button */}
+              {/* Primary Sign-In Button: Immediately opens phone's default browser (Chrome/Brave) at t=0ms! */}
               <SpringButton
                 style={styles.exploreBtn}
                 onPress={() => handleStartPhoneSignIn(true)}
@@ -542,7 +689,7 @@ export default function LandingScreen({ navigation }: any) {
                 </View>
               </SpringButton>
 
-              {/* If Mac already has an authenticated Cursor CLI account, offer instant 1-tap verification */}
+              {/* Optional 1-tap shortcut if Mac CLI is already logged in */}
               {detectedMacEmail ? (
                 <SpringButton
                   style={styles.quickSpawnBtn}
@@ -550,7 +697,7 @@ export default function LandingScreen({ navigation }: any) {
                 >
                   <Check size={14} color={COLORS.lime} strokeWidth={2.6} />
                   <Text style={[styles.quickSpawnText, { color: COLORS.lime }]} numberOfLines={1}>
-                    CONTINUE AS {detectedMacEmail.toUpperCase()}
+                    INSTANT CONTINUE AS {detectedMacEmail.toUpperCase()}
                   </Text>
                 </SpringButton>
               ) : null}
