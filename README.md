@@ -171,41 +171,150 @@ Modern AI-assisted software development happens inside **Cursor** on a developer
 
 ---
 
-## Installation Guide: End Users (`cuss.dmg` + `cuss.apk`)
+## All Ways to Build, Install, and Use CUSS
 
-Download both artifacts from the [**GitHub Releases page**](https://github.com/negativenagesh/cuss/releases):
-
-1. **Install on macOS (`cuss.dmg`)**:
-   - Open **`cuss.dmg`** and double-click **`Install CUSS`** (on first launch, right-click -> **Open** to bypass Gatekeeper for ad-hoc signed builds).
-   - Click **INSTALL CUSS**. The installer sets up the bundled Node 22 runtime, the Mac Bridge (`:4040`), precompiled native helpers, and **`/Applications/CUSS Menu.app`** (`CUSS` in your top menu bar).
-   - When macOS prompts for permissions, allow **Accessibility** (for Live Keyboard injection and focused-field echo) and **Screen Recording** (for Live Mirror capture) for `node`.
-2. **Install on Android (`cuss.apk`)**:
-   - Download and install **`cuss.apk`** on your Android phone.
-   - Open **CUSS** on your phone. If your phone and Mac are on the same Wi-Fi LAN, CUSS auto-discovers and pairs with your Mac bridge; or tap **SCAN** and point your camera at the QR code shown in the macOS installer or in **CUSS -> Pair Phone** in the Mac menu bar.
+CUSS supports multiple deployment and development workflows depending on whether you want a zero-terminal appliance setup, an interactive development setup with Expo Go, or custom self-built binaries.
 
 ---
 
-## Developer Setup and Building from Source
+### Method 1 — Zero-Terminal Prebuilt Release (`cuss.dmg` + `cuss.apk`)
+
+Best for end users who want to install CUSS without installing Node.js, npm, Xcode, or running any terminal commands.
+
+1. Download **`cuss.dmg`** (macOS Apple Silicon installer) and **`cuss.apk`** (Android standalone application) from [**GitHub Releases**](https://github.com/negativenagesh/cuss/releases).
+2. **On your Mac**:
+   - Double-click **`cuss.dmg`** to mount the disk image, then double-click **`Install CUSS`** (on first launch, right-click -> **Open** to allow the ad-hoc signed installer).
+   - Click **INSTALL CUSS**. The installer unpacks a self-contained Node 22 runtime, the Mac Bridge (`:4040`), and precompiled native helpers into `~/Library/Application Support/CUSS`, installs **`/Applications/CUSS Menu.app`**, registers the `com.cuss.bridge` and `com.cuss.menubar` LaunchAgents, syncs your Cursor Desktop token into `~/.cursor/auth.json`, and displays a **Pairing QR Code**.
+   - When macOS prompts for permissions, grant **Accessibility** (for Live Keyboard injection and focused-field echo) and **Screen Recording** (for Live Mirror capture) to `node`.
+3. **On your Android phone**:
+   - Install and open **`cuss.apk`**.
+   - If your phone and Mac are on the same Wi-Fi network, CUSS auto-discovers and pairs with your Mac bridge automatically; or tap **SCAN** and point the camera at the QR code shown in the macOS installer or in **CUSS -> Pair Phone** in the Mac menu bar.
+
+---
+
+### Method 2 — Source Install with Native macOS Menu Bar and Background Daemons (`npm run menubar:install`)
+
+Best for developers who clone the repository once and want both the Mac Bridge (`:4040`) and the Expo Go bundler (`:8081`) to run permanently in the background on macOS login — with zero terminal windows open.
 
 ```bash
 git clone https://github.com/negativenagesh/cuss.git
 cd cuss
 
-# Start both the Mac Bridge (:4040) and Expo Go bundler (:8081) in one command:
-npm start
+# Install dependencies in bridge/ and mobile/:
+npm --prefix bridge install
+npm --prefix mobile install
 
-# Install permanent macOS LaunchAgents + /Applications/CUSS Menu.app:
+# Build native Swift helpers + install /Applications/CUSS Menu.app + start LaunchAgents:
+npm run native:build
 npm run menubar:install
+```
 
-# Rebuild native Swift helpers (cuss-mac-input and cuss-mac-speech):
+**How to use after running `npm run menubar:install`**:
+- Three macOS `LaunchAgents` (`RunAtLoad: true`, `KeepAlive: true`) now run automatically in the background whenever you log into your Mac:
+  1. `com.cuss.bridge` (Port `4040` — Mac Cursor Bridge + native input daemon)
+  2. `com.cuss.expo` (Port `8081` — Expo Go Metro server with automatic `--clear` cache hygiene)
+  3. `com.cuss.menubar` (`CUSS` status item in your top macOS menu bar)
+- Click **CUSS** in your top Mac menu bar -> **Pair Phone — Show QR Code & Control HUD** to scan either the **CUSS APK Pairing QR** (`missioncontrol://pair?...`) or the **Expo Go QR** (`exp://<MAC_LAN_IP>:8081`).
+
+---
+
+### Method 3 — Single-Terminal Interactive Development (`npm start`)
+
+Best when actively modifying `bridge/src/*` or `mobile/src/*` and testing changes live with Fast Refresh in the **Expo Go** app (Android or iOS).
+
+```bash
+git clone https://github.com/negativenagesh/cuss.git
+cd cuss
+
+# Starts the Mac Bridge (:4040) in the background, prints pairing credentials,
+# and launches the interactive Expo Go bundler (:8081) in the same terminal:
+npm start
+```
+
+**Other direct development commands**:
+```bash
+# Run only the Mac Bridge in watch mode (:4040):
+npm run bridge:dev
+
+# Run only the Mac Bridge in production mode (:4040):
+npm run bridge:start
+
+# Run only the Expo Metro bundler (:8081) with clean cache:
+cd mobile && npx expo start --port 8081 --clear
+```
+
+---
+
+### Method 4 — Headless Background Bridge Service Only (`npm run service:install`)
+
+Best if you use the standalone **`cuss.apk`** on your Android phone and only need port `4040` (`com.cuss.bridge`) running in the background on your Mac without the Expo Metro development server (`:8081`).
+
+```bash
+# Install and start ~/Library/LaunchAgents/com.cuss.bridge.plist (:4040):
+npm run service:install
+
+# Inspect live bridge logs:
+tail -f /tmp/cuss-bridge.log
+
+# Uninstall the background bridge service if no longer needed:
+npm run service:uninstall
+```
+
+---
+
+### Method 5 — Building Distributable Artifacts from Source (`cuss.dmg` and `cuss.apk`)
+
+#### 5A. Build the Self-Contained macOS Disk Image (`dist/cuss.dmg`)
+Requires macOS with Xcode Command Line Tools (`swiftc`, `iconutil`, `hdiutil`, `codesign`) and Node.js 20+:
+
+```bash
+# 1. (Optional) Regenerate all icons, splash screens, DMG background, and CUSS.icns:
+npm run brand:assets
+
+# 2. Precompile native Swift helpers (bridge/bin/cuss-mac-input & cuss-mac-speech):
 npm run native:build
 
-# Build the self-contained macOS installer disk image (dist/cuss.dmg):
+# 3. Compile Install CUSS.app + CUSS Menu.app, bundle Node runtime + bridge, and create dist/cuss.dmg:
 npm run dmg
-
-# Trigger a standalone Android APK build on Expo EAS (requires `npx eas-cli login`):
-npm run apk
 ```
+Output: `dist/cuss.dmg` (~59 MB).
+
+#### 5B. Build the Standalone Android APK via Expo EAS Cloud (`dist/cuss.apk`)
+Requires an Expo account (`npx eas-cli login`), with no local Android SDK or Java required on your Mac:
+
+```bash
+# 1. Authenticate with Expo EAS once:
+cd mobile && npx eas-cli login && cd ..
+
+# 2. Trigger a cloud release APK build (uses the "apk" profile in mobile/eas.json):
+npm run apk
+
+# 3. Download the latest finished APK into dist/cuss.apk:
+npm run apk:download
+```
+
+#### 5C. Build the Standalone Android APK Locally Offline (Gradle + Android SDK)
+If you have JDK 17 (`JAVA_HOME`) and the Android SDK (`ANDROID_HOME`) installed locally on your Mac:
+
+```bash
+cd mobile
+npx expo prebuild --platform android --clean
+cd android
+./gradlew assembleRelease
+```
+Output: `mobile/android/app/build/outputs/apk/release/app-release.apk`.
+
+---
+
+### Method 6 — Using CUSS Remotely Outside Local Wi-Fi (Tailscale / Mesh VPN)
+
+When your Mac and phone are on the same Wi-Fi LAN, CUSS connects directly to `http://<MAC_LAN_IP>:4040`. To use CUSS over 5G cellular or from any remote network:
+
+1. Install [**Tailscale**](https://tailscale.com) on both your Mac and your Android phone and sign into the same Tailnet.
+2. Find your Mac's Tailscale IPv4 address (`100.x.y.z`) by clicking the Tailscale menu bar icon or running `tailscale ip -4`.
+3. In the CUSS mobile app pairing screen, enter:
+   - **Bridge URL**: `http://<YOUR_MAC_TAILSCALE_IP>:4040`
+   - **Pairing Token**: Copy from **CUSS -> Copy Pairing Token** in your Mac menu bar (or from `~/.config/mission-control/config.json`).
 
 ---
 
