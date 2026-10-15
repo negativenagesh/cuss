@@ -164,6 +164,17 @@ export const localAuthLogin = (forceBrowser = false) =>
     timeoutMs: 15_000,
   });
 
+export const localAuthComplete = (body: {
+  accessToken: string;
+  refreshToken?: string;
+  email?: string;
+}) =>
+  api<{ loggedIn: boolean; email?: string }>('/api/local/auth/complete', {
+    method: 'POST',
+    body,
+    timeoutMs: 10_000,
+  });
+
 export const localAuthLogout = () =>
   api<{ loggedOut: boolean }>('/api/local/auth/logout', { method: 'POST' });
 

@@ -61,6 +61,18 @@ export class LocalAgentsController {
     return await this.local.startMobileLogin(Boolean(body?.forceBrowser));
   }
 
+  @Post('auth/complete')
+  async authComplete(@Body() body: { accessToken?: string; refreshToken?: string; email?: string }) {
+    if (!body?.accessToken?.trim()) {
+      throw new HttpException({ code: 'validation_error', message: 'accessToken is required' }, 400);
+    }
+    return await this.local.completeMobileLogin({
+      accessToken: body.accessToken,
+      refreshToken: body.refreshToken,
+      email: body.email,
+    });
+  }
+
   @Post('auth/logout')
   async authLogout() {
     return await this.local.logoutCursor();

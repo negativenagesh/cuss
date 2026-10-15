@@ -29,6 +29,7 @@ import {
 } from '../components/CussIcons';
 import {
   listAgents,
+  localAuthComplete,
   localAuthLogin,
   localAuthLogout,
   localAuthStatus,
@@ -407,10 +408,18 @@ export default function LandingScreen({ navigation }: any) {
           if (res.ok) {
             const data = await res.json();
             if (data?.accessToken) {
-              const email = detectedMacEmail || accountEmail || 'Cursor Account';
+              // Push the mobile-acquired OAuth tokens directly to the Mac bridge (`~/.cursor/auth.json`)
+              // so the Mac CLI is authenticated 100% headlessly without ever opening Mac Terminal!
+              const bridgeComplete = await localAuthComplete({
+                accessToken: String(data.accessToken),
+                refreshToken: data.refreshToken ? String(data.refreshToken) : undefined,
+              }).catch(() => null);
+              const email =
+                bridgeComplete?.email || detectedMacEmail || accountEmail || 'Cursor Account';
               setAwaitingBrowserAuth(false);
               setPendingLoginUrl(undefined);
               setPkceSession(null);
+              setDetectedMacEmail(email);
               await setCursorSignedIn(true, email);
               return;
             }

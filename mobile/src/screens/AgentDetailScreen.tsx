@@ -1323,8 +1323,15 @@ export default function AgentDetailScreen({ route, navigation }: any) {
         ) : null}
       </View>
 
-      {/* Bottom Pinned Composer Dock (always stays at the very bottom!) */}
-      <View style={styles.composerContainer}>
+      {/* Bottom Pinned Composer Dock: sits at bottom when keyboard is closed, lifts above keyboard when focused */}
+      <View
+        style={[
+          styles.composerContainer,
+          Platform.OS === 'android' && kbHeight > 0
+            ? { paddingBottom: kbHeight + 8 }
+            : null,
+        ]}
+      >
         <CursorComposer
           cwd={agent.cwd}
           busy={busy}

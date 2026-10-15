@@ -246,8 +246,15 @@ export default function CreateAgentScreen({ navigation, route }: any) {
         ) : null}
       </ScrollView>
 
-      {/* Pinned Bottom Chat Composer Box (always stays at the very bottom!) */}
-      <View style={styles.composerBottomPinned}>
+      {/* Pinned Bottom Chat Composer Box: sits at bottom when keyboard is closed, lifts above keyboard when focused */}
+      <View
+        style={[
+          styles.composerBottomPinned,
+          Platform.OS === 'android' && kbHeight > 0
+            ? { paddingBottom: kbHeight + 8 }
+            : null,
+        ]}
+      >
         <CursorComposer
           cwd={isMac ? cwd : undefined}
           busy={busy}

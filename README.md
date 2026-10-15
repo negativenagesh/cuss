@@ -110,21 +110,21 @@ cd cuss
 npm start
 ```
 
-*(Optional)* Want the Mac Bridge to run permanently in the background on macOS login without any terminal open?
+*(Optional)* Want a **native macOS Menu Bar app (`⚡ CUSS` in your top Mac menu bar)** and background daemon that auto-starts whenever you log into your Mac without any terminal open?
 ```bash
+npm run menubar:install
 npm run service:install
 ```
+This installs **`/Applications/CUSS Menu.app`** in your top macOS status bar (`⚡ CUSS`) with 1-click access to your live LAN URL, Pairing Token, Pairing HUD Window, Bridge Restart, and Zero-Terminal Cursor Auth Sync.
 
 ---
 
-### Step 2 — Pair & Sign In to Cursor Directly from Your Android Phone
-1. Open **Expo Go** on your Android phone and scan the **Expo QR code** printed by `npm start`.
-2. Pair with your Mac Bridge (scan the Bridge QR or enter `http://<YOUR_MAC_IP>:4040` + pairing token printed above the Expo QR).
-3. **First-Time Cursor Sign-In on Phone (`LandingScreen`)**:
-   - On your first visit, CUSS displays **`SIGN IN TO CURSOR TO CONTINUE`**.
-   - Tapping it triggers `NO_OPEN_BROWSER=1 cursor agent login` on the Mac bridge, returns the official Cursor OAuth link (`https://cursor.com/loginDeepControl?...`), and opens it directly in your phone's browser (**Chrome / Brave**).
-   - Once you approve login on your phone, CUSS automatically detects the completed session, saves your signed-in state on the Android device, and unlocks **`EXPLORE CUSS`**.
-   - Subsequent app launches go straight to **`EXPLORE CUSS`** (with a **`SIGN OUT`** button available anytime in the header).
+### Step 2 — Zero-Terminal Cursor Authentication & Phone Browser Sign-In
+1. **Automatic Desktop Token Sync (`state.vscdb` → `~/.cursor/auth.json`)**:
+   - Using REA (`ev_06eeca4a...`), we reverse-engineered Cursor's `FileCredentialManager` (`AGENT_CLI_CREDENTIAL_STORE=file` reading `~/.cursor/auth.json`).
+   - On startup, the bridge automatically imports `cursorAuth/accessToken` and `cursorAuth/refreshToken` from `Cursor.app`'s SQLite database (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`) into `~/.cursor/auth.json` — **you never need to open Terminal or run `cursor agent login`**.
+2. **Direct Phone Browser OAuth (`SIGN IN TO CURSOR TO CONTINUE`)**:
+   - Even if `Cursor.app` isn't logged in on your Mac, tapping **`SIGN IN TO CURSOR TO CONTINUE`** on your Android phone generates a PKCE challenge (`https://cursor.com/loginDeepControl?...`) at `t = 0ms`, opens Chrome/Brave on your phone, polls `https://api2.cursor.sh/auth/poll`, and pushes `{ accessToken, refreshToken }` to `POST /api/local/auth/complete` (`~/.cursor/auth.json`).
 
 ---
 

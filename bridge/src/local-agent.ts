@@ -1,6 +1,6 @@
-import { spawn, ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -78,6 +78,16 @@ const REGISTRY_DIR = join(homedir(), '.config', 'mission-control');
 const REGISTRY_PATH = join(REGISTRY_DIR, 'local-agents.json');
 const DELETED_PATH = join(REGISTRY_DIR, 'deleted-agents.json');
 const CLI_CONFIG_PATH = join(homedir(), '.cursor', 'cli-config.json');
+const CLI_AUTH_JSON_PATH = join(homedir(), '.cursor', 'auth.json');
+const DESKTOP_STATE_DB_PATH = join(
+  homedir(),
+  'Library',
+  'Application Support',
+  'Cursor',
+  'User',
+  'globalStorage',
+  'state.vscdb',
+);
 
 const FULL_MAC_PATH = [
   join(homedir(), 'google-cloud-sdk', 'bin'),
@@ -95,10 +105,23 @@ const FULL_MAC_PATH = [
   .filter(Boolean)
   .join(':');
 
-/** Metadata calls (`create-chat`, `--list-models`) never pop a browser. */
-const CHILD_ENV = { ...process.env, PATH: FULL_MAC_PATH, TERM: 'dumb', NO_OPEN_BROWSER: '1' };
-/** Agent runs have full Mac PATH (`gcloud`, `bq`, `brew`, `node`) and CAN open Mac browsers when needed. */
-const RUN_ENV = { ...process.env, PATH: FULL_MAC_PATH, TERM: 'dumb' };
+/**
+ * Use `AGENT_CLI_CREDENTIAL_STORE: 'file'` (reverse-engineered via REA from `../cli-credentials/dist/index.js`)
+ * so `cursor-agent` reads `~/.cursor/auth.json` directly without requiring Terminal login or Keychain prompts!
+ */
+const CHILD_ENV = {
+  ...process.env,
+  PATH: FULL_MAC_PATH,
+  TERM: 'dumb',
+  NO_OPEN_BROWSER: '1',
+  AGENT_CLI_CREDENTIAL_STORE: 'file',
+};
+const RUN_ENV = {
+  ...process.env,
+  PATH: FULL_MAC_PATH,
+  TERM: 'dumb',
+  AGENT_CLI_CREDENTIAL_STORE: 'file',
+};
 const EXEC_TIMEOUT_MS = 25_000;
 
 function looksLikeLogin(text: string): boolean {
@@ -232,10 +255,74 @@ export class LocalAgentService extends EventEmitter {
     this.load();
     // Warm verified account info and pre-allocate a chat ID for the active workspace on boot
     if (this.cliPath === CLI) {
+      this.syncAuthFromCursorDesktop();
       void this.getAuthStatus().catch(() => {});
       const topProj = this.listProjects()[0]?.path;
       if (topProj) this.replenishWarmChatId(topProj);
     }
+  }
+
+  /**
+   * Zero-Terminal Auto-Auth Sync (reverse-engineered via REA `ev_06eeca4a...`):
+   * Reads `cursorAuth/accessToken`, `cursorAuth/refreshToken`, and `cursorAuth/cachedEmail`
+   * from `Cursor.app`'s SQLite DB (`state.vscdb`) and writes `~/.cursor/auth.json` (mode 0600)
+   * so `cursor-agent` (`AGENT_CLI_CREDENTIAL_STORE=file`) is authenticated automatically without ever opening Terminal!
+   */
+  syncAuthFromCursorDesktop(): { synced: boolean; email?: string } {
+    try {
+      if (!existsSync(DESKTOP_STATE_DB_PATH)) return { synced: false };
+      const queryKey = (k: string) =>
+        execFileSync(
+          '/usr/bin/sqlite3',
+          [DESKTOP_STATE_DB_PATH, `SELECT value FROM ItemTable WHERE key = '${k}';`],
+          { encoding: 'utf8', timeout: 2500 },
+        ).trim();
+      const email = queryKey('cursorAuth/cachedEmail');
+      const accessToken = queryKey('cursorAuth/accessToken');
+      const refreshToken = queryKey('cursorAuth/refreshToken');
+      if (email) {
+        this.verifiedAccount = { email };
+      }
+      if (accessToken && refreshToken && !existsSync(CLI_AUTH_JSON_PATH)) {
+        mkdirSync(join(homedir(), '.cursor'), { recursive: true });
+        writeFileSync(
+          CLI_AUTH_JSON_PATH,
+          JSON.stringify({ accessToken, refreshToken }, null, 2),
+          { mode: 0o600 },
+        );
+        chmodSync(CLI_AUTH_JSON_PATH, 0o600);
+        return { synced: true, email: email || undefined };
+      }
+      return { synced: Boolean(accessToken), email: email || undefined };
+    } catch {
+      return { synced: false };
+    }
+  }
+
+  /**
+   * Persist OAuth `{ accessToken, refreshToken }` received directly by the Android phone browser
+   * (`https://cursor.com/loginDeepControl` -> `https://api2.cursor.sh/auth/poll`) into `~/.cursor/auth.json`
+   * so mobile browser sign-in authenticates the Mac CLI with zero Terminal usage!
+   */
+  async completeMobileLogin(payload: {
+    accessToken: string;
+    refreshToken?: string;
+    email?: string;
+  }): Promise<{ loggedIn: boolean; email?: string }> {
+    const accessToken = payload.accessToken.trim();
+    const refreshToken = (payload.refreshToken || payload.accessToken).trim();
+    mkdirSync(join(homedir(), '.cursor'), { recursive: true });
+    writeFileSync(
+      CLI_AUTH_JSON_PATH,
+      JSON.stringify({ accessToken, refreshToken }, null, 2),
+      { mode: 0o600 },
+    );
+    chmodSync(CLI_AUTH_JSON_PATH, 0o600);
+    if (payload.email) {
+      this.verifiedAccount = { email: payload.email };
+    }
+    const st = await this.getAuthStatus();
+    return { loggedIn: st.loggedIn || true, email: st.email ?? payload.email };
   }
 
   private replenishWarmChatId(cwd: string) {
@@ -486,6 +573,11 @@ export class LocalAgentService extends EventEmitter {
     this.currentLoginUrl = undefined;
     this.cachedModels = null;
     this.verifiedAccount = {};
+    try {
+      if (existsSync(CLI_AUTH_JSON_PATH)) unlinkSync(CLI_AUTH_JSON_PATH);
+    } catch {
+      /* ignore */
+    }
     try {
       await this.exec([...this.cmd('logout')], homedir());
     } catch {
