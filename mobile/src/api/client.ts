@@ -1,37 +1,115 @@
-import { useStore, CursorIdeState, ModelFamily, ProjectEntry, PromptAttachments } from '../store';
+import {
+  useStore,
+  detectLiveMacBridgeUrl,
+  CursorIdeState,
+  ModelFamily,
+  ProjectEntry,
+  PromptAttachments,
+} from '../store';
 import type { ExecutionMode } from '../theme';
 
-/** REST client for the bridge (SPEC.md §4). Throws {status, code} on error. */
+async function tryAutoHealBridge(): Promise<{ bridgeUrl: string; token: string } | null> {
+  const state = useStore.getState();
+  const candidates = Array.from(
+    new Set(
+      [
+        detectLiveMacBridgeUrl(),
+        state.bridgeUrl,
+        'http://10.10.0.160:4040',
+        'http://192.168.1.10:4040',
+      ].filter((x): x is string => Boolean(x)),
+    ),
+  );
+
+  for (const candidateUrl of candidates) {
+    try {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 1800);
+      const res = await fetch(`${candidateUrl}/api/auto-pair`, { signal: ac.signal });
+      clearTimeout(t);
+      if (res.ok) {
+        const j = await res.json();
+        const nextToken = j?.token ? String(j.token) : state.token;
+        if (nextToken) {
+          await state.setPairing(candidateUrl, nextToken);
+          return { bridgeUrl: candidateUrl, token: nextToken };
+        }
+      }
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return null;
+}
+
+/** REST client for the bridge (SPEC.md §4) with automatic Wi-Fi IP healing. */
 export async function api<T = any>(
   path: string,
   options: { method?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<T> {
-  const { bridgeUrl, token } = useStore.getState();
-  if (!bridgeUrl || !token) throw Object.assign(new Error('not paired'), { status: 0, code: 'not_paired' });
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), options.timeoutMs ?? 30_000);
+  let { bridgeUrl, token, setPairing } = useStore.getState();
+  const liveDetectedUrl = detectLiveMacBridgeUrl();
+
+  // If Expo Go knows our Mac's current Wi-Fi IP and it differs from a stale LAN IP, switch before fetching!
+  if (
+    liveDetectedUrl &&
+    bridgeUrl &&
+    liveDetectedUrl !== bridgeUrl &&
+    /^https?:\/\/(192\.168\.|10\.|172\.)/i.test(bridgeUrl)
+  ) {
+    bridgeUrl = liveDetectedUrl;
+    if (token) void setPairing(bridgeUrl, token);
+  }
+
+  if (!bridgeUrl || !token) {
+    const healed = await tryAutoHealBridge();
+    if (!healed) {
+      throw Object.assign(new Error('not paired'), { status: 0, code: 'not_paired' });
+    }
+    bridgeUrl = healed.bridgeUrl;
+    token = healed.token;
+  }
+
+  const doFetch = async (targetUrl: string, targetToken: string, timeout: number) => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeout);
+    try {
+      return await fetch(`${targetUrl}${path}`, {
+        method: options.method ?? 'GET',
+        headers: {
+          Authorization: `Bearer ${targetToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        signal: ac.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   let res: Response;
   try {
-    res = await fetch(`${bridgeUrl}${path}`, {
-      method: options.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      signal: ac.signal,
-    });
+    // Use a fast 4.5s initial probe on GET/auth calls so a changed Wi-Fi IP heals in <5s instead of hanging 30s
+    const initialTimeout = options.timeoutMs ?? 8_000;
+    res = await doFetch(bridgeUrl, token, initialTimeout);
   } catch (e: any) {
-    const msg = String(e?.message ?? e);
-    if (e?.name === 'AbortError' || /cancelled|canceled|aborted/i.test(msg)) {
-      throw Object.assign(
-        new Error('Bridge took too long — restart it on the Mac (npm start in bridge/) and retry'),
-        { status: 0, code: 'timeout' },
-      );
+    // Network unreachable or timed out (e.g. Wi-Fi IP changed from 192.168.1.10 -> 10.10.0.160) -> auto-heal & retry once!
+    const healed = await tryAutoHealBridge();
+    if (healed) {
+      res = await doFetch(healed.bridgeUrl, healed.token, options.timeoutMs ?? 12_000);
+    } else {
+      const msg = String(e?.message ?? e);
+      if (e?.name === 'AbortError' || /cancelled|canceled|aborted/i.test(msg)) {
+        throw Object.assign(
+          new Error(
+            `Cannot reach Mac at ${bridgeUrl}. Ensure your phone and Mac are on the same Wi-Fi (or Tailscale).`,
+          ),
+          { status: 0, code: 'timeout' },
+        );
+      }
+      throw e;
     }
-    throw e;
-  } finally {
-    clearTimeout(timer);
   }
   const text = await res.text();
   let json: any = null;
@@ -133,14 +211,32 @@ export const localExecShell = (cwd: string, command: string) =>
 export const localOpenUrlOnMac = (url: string) =>
   api<{ opened: boolean }>('/api/local/open-url', { method: 'POST', body: { url } });
 
-export const localMacScreen = () =>
-  api<{
-    ok: boolean;
-    frontApp: string;
-    imageBase64?: string;
-    capturedAt: string;
-    hint?: string;
-  }>('/api/local/mac-screen', { timeoutMs: 15_000 });
+export interface MacMirrorFrame {
+  ok: boolean;
+  seq?: number;
+  frontApp: string;
+  windowTitle?: string;
+  browserUrl?: string;
+  browserTitle?: string;
+  activeProcesses?: string[];
+  terminalLines?: string[];
+  imageBase64?: string;
+  capturedAt: string;
+  hint?: string;
+}
+
+export const localMacScreen = (agentId?: string) =>
+  api<MacMirrorFrame>(
+    `/api/local/mac-screen${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ''}`,
+    { timeoutMs: 10_000 },
+  );
+
+export const localMacAction = (type: 'focus-app' | 'send-key', target: string) =>
+  api<{ ok: boolean }>('/api/local/mac-action', {
+    method: 'POST',
+    body: { type, target },
+    timeoutMs: 6_000,
+  });
 
 export const localTranscribe = (audioBase64: string, ext = 'm4a') =>
   api<{ text: string }>('/api/local/transcribe', {

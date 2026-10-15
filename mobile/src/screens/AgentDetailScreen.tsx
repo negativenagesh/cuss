@@ -61,12 +61,14 @@ import {
   localGitAction,
   localGitDiff,
   localList,
+  localMacAction,
   localMacScreen,
   localOpenUrlOnMac,
   localPrompt,
   localRename,
   localShowOnMac,
   localStop,
+  MacMirrorFrame,
   sendPrompt,
 } from '../api/client';
 import { LiveSocket } from '../api/live';
@@ -284,16 +286,11 @@ export default function AgentDetailScreen({ route, navigation }: any) {
   const [shellOutput, setShellOutput] = useState('');
   const [shellUrls, setShellUrls] = useState<string[]>([]);
 
-  // Live Mac Screen / Browser Peek modal state
+  // Live Mac Screen / Browser Mirror state (REA 4427.index.js live streaming)
   const [peekModalOpen, setPeekModalOpen] = useState(false);
   const [peekLoading, setPeekLoading] = useState(false);
-  const [peekData, setPeekData] = useState<{
-    ok: boolean;
-    frontApp: string;
-    imageBase64?: string;
-    capturedAt: string;
-    hint?: string;
-  } | null>(null);
+  const [liveMirrorStreaming, setLiveMirrorStreaming] = useState(true);
+  const [peekData, setPeekData] = useState<MacMirrorFrame | null>(null);
 
   // Rename Chat modal state
   const [renameModalOpen, setRenameModalOpen] = useState(false);
@@ -579,6 +576,11 @@ export default function AgentDetailScreen({ route, navigation }: any) {
       if (isMac) {
         const live = new LiveSocket(
           (msg) => {
+            if (msg.type === 'mirror:frame' && msg.frame) {
+              setPeekLoading(false);
+              setPeekData(msg.frame);
+              return;
+            }
             if (msg.type === 'local:event' && msg.agentId === agent.id) {
               // Ignore standalone status heartbeats if no real transcript events arrived so device cache stays intact
               if (firstServerEventRef.current && msg.raw?.type === 'status') {
@@ -799,11 +801,35 @@ export default function AgentDetailScreen({ route, navigation }: any) {
     }
   }
 
+  // Subscribe/unsubscribe to continuous WebSocket `mirror:frame` stream while MAC LIVE MIRROR modal is open
+  useEffect(() => {
+    if (!peekModalOpen || !liveMirrorStreaming) {
+      liveRef.current?.send({ type: 'mirror:unsubscribe' });
+      return;
+    }
+    liveRef.current?.send({ type: 'mirror:subscribe', agentId: agent.id });
+    // Fallback HTTP poll if WS frame hasn't arrived yet
+    const iv = setInterval(async () => {
+      try {
+        const res = await localMacScreen(agent.id);
+        setPeekLoading(false);
+        setPeekData(res);
+      } catch {
+        /* ignore */
+      }
+    }, 1400);
+    return () => {
+      clearInterval(iv);
+      liveRef.current?.send({ type: 'mirror:unsubscribe' });
+    };
+  }, [peekModalOpen, liveMirrorStreaming, agent.id]);
+
   async function handleOpenMacPeek() {
     setPeekModalOpen(true);
-    setPeekLoading(true);
+    setLiveMirrorStreaming(true);
+    if (!peekData) setPeekLoading(true);
     try {
-      const res = await localMacScreen();
+      const res = await localMacScreen(agent.id);
       setPeekData(res);
     } catch (e: any) {
       setPeekData({
@@ -921,7 +947,7 @@ export default function AgentDetailScreen({ route, navigation }: any) {
           {isMac ? (
             <SpringButton style={styles.peekBtn} onPress={handleOpenMacPeek} tiltOnPress>
               <Laptop size={12} color={COLORS.amber} />
-              <Text style={styles.peekBtnText}>MAC PEEK</Text>
+              <Text style={styles.peekBtnText}>LIVE MIRROR</Text>
             </SpringButton>
           ) : null}
           {isRunning ? (
@@ -1184,7 +1210,7 @@ export default function AgentDetailScreen({ route, navigation }: any) {
       {/* MODAL: Full Workspace Git Studio (Branches, Commit, Push, Pull, Changed Files & Diff) */}
       <Modal
         visible={diffModalOpen}
-        animationType="slide"
+        animationType="fade"
         transparent
         onRequestClose={() => setDiffModalOpen(false)}
       >
@@ -1407,7 +1433,7 @@ export default function AgentDetailScreen({ route, navigation }: any) {
       {/* MODAL: Interactive Mac Shell & GCP OAuth Login Helper */}
       <Modal
         visible={shellModalOpen}
-        animationType="slide"
+        animationType="fade"
         transparent
         onRequestClose={() => setShellModalOpen(false)}
       >
@@ -1546,25 +1572,55 @@ export default function AgentDetailScreen({ route, navigation }: any) {
         </View>
       </Modal>
 
-      {/* MODAL: Live Mac Screen & Browser Peek */}
+      {/* MODAL: REA-Inspired Real-Time Mac Live Mirror (Continuous Video Stream + Terminal Grid + Browser & App Controls) */}
       <Modal
         visible={peekModalOpen}
-        animationType="slide"
+        animationType="fade"
         transparent
         onRequestClose={() => setPeekModalOpen(false)}
       >
         <View style={styles.diffModalBackdrop}>
           <View style={styles.diffModalSheet}>
             <View style={styles.diffModalHeader}>
-              <View>
-                <Text style={styles.diffModalTitle}>MAC LIVE SCREEN PEEK</Text>
-                <Text style={styles.diffModalSub}>
-                  {peekData?.frontApp ? `FRONTMOST APP // ${peekData.frontApp}` : 'MAC DISPLAY'}
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                  <View
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 4,
+                      backgroundColor: liveMirrorStreaming ? COLORS.lime : COLORS.amber,
+                    }}
+                  />
+                  <Text style={styles.diffModalTitle}>MAC LIVE MIRROR</Text>
+                  {peekData?.seq ? (
+                    <View style={styles.deviceSavedPill}>
+                      <Text style={styles.deviceSavedText}>FRAME #{peekData.seq}</Text>
+                    </View>
+                  ) : null}
+                </View>
+                <Text style={styles.diffModalSub} numberOfLines={1}>
+                  {peekData?.frontApp ? `${peekData.frontApp}` : 'MAC DISPLAY'}
+                  {peekData?.windowTitle ? ` — ${peekData.windowTitle}` : ''}
                 </Text>
               </View>
               <View style={{ flexDirection: 'row', gap: 8 }}>
-                <SpringButton style={styles.diffCloseBtn} onPress={handleOpenMacPeek}>
-                  <RefreshCw size={15} color={COLORS.lime} />
+                <SpringButton
+                  style={[
+                    styles.diffCloseBtn,
+                    liveMirrorStreaming && { borderColor: COLORS.lime, backgroundColor: COLORS.limeDim },
+                  ]}
+                  onPress={() => setLiveMirrorStreaming((v) => !v)}
+                >
+                  <Text
+                    style={{
+                      fontFamily: FONTS.monoBold,
+                      fontSize: 9.5,
+                      color: liveMirrorStreaming ? COLORS.lime : COLORS.amber,
+                    }}
+                  >
+                    {liveMirrorStreaming ? 'LIVE ON' : 'PAUSED'}
+                  </Text>
                 </SpringButton>
                 <SpringButton style={styles.diffCloseBtn} onPress={() => setPeekModalOpen(false)}>
                   <X size={17} color={COLORS.bone} />
@@ -1572,38 +1628,142 @@ export default function AgentDetailScreen({ route, navigation }: any) {
               </View>
             </View>
 
-            {peekLoading ? (
-              <CussSmallArtLoader
-                variant="card"
-                title="CAPTURING MAC DISPLAY"
-                subtitle="Snapshotting active Mac window & browser…"
-                accentColor={COLORS.amber}
-              />
-            ) : peekData?.ok && peekData.imageBase64 ? (
-              <ScrollView contentContainerStyle={{ alignItems: 'center', gap: 10 }}>
-                <Image
-                  source={{ uri: peekData.imageBase64 }}
-                  style={{
-                    width: '100%',
-                    height: 320,
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    borderColor: COLORS.borderHi,
-                    backgroundColor: '#05050A',
-                  }}
-                  resizeMode="contain"
-                />
-                <Text style={styles.diffModalSub}>
-                  Captured at {new Date(peekData.capturedAt).toLocaleTimeString()}
-                </Text>
-              </ScrollView>
-            ) : (
-              <View style={styles.gitOutputBox}>
-                <Text style={styles.gitOutputText}>
-                  {peekData?.hint ?? 'Unable to capture Mac screen.'}
-                </Text>
+            {/* 1-Tap Remote Mac App Switcher & Key Controls */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={{ marginBottom: 10 }}
+            >
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                {[
+                  { label: 'FOCUS CURSOR', type: 'focus-app' as const, target: 'Cursor' },
+                  { label: 'FOCUS CHROME', type: 'focus-app' as const, target: 'Google Chrome' },
+                  { label: 'FOCUS BRAVE', type: 'focus-app' as const, target: 'Brave Browser' },
+                  { label: 'FOCUS TERMINAL', type: 'focus-app' as const, target: 'Terminal' },
+                  { label: 'KEY: ENTER', type: 'send-key' as const, target: 'enter' },
+                  { label: 'KEY: ESC', type: 'send-key' as const, target: 'escape' },
+                ].map((act) => (
+                  <SpringButton
+                    key={act.label}
+                    style={styles.branchChip}
+                    onPress={() => {
+                      void localMacAction(act.type, act.target);
+                    }}
+                  >
+                    <Laptop size={10} color={COLORS.lime} />
+                    <Text style={styles.branchChipText}>{act.label}</Text>
+                  </SpringButton>
+                ))}
               </View>
-            )}
+            </ScrollView>
+
+            <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 20 }}>
+              {/* Active Mac Browser Tab Mirror (if Chrome / Brave / Safari is frontmost) */}
+              {peekData?.browserUrl ? (
+                <View style={styles.oauthUrlCard}>
+                  <Text style={styles.diffSectionLabel}>
+                    LIVE MAC BROWSER TAB // {peekData.browserTitle || peekData.frontApp}
+                  </Text>
+                  <Text style={styles.oauthUrlText} numberOfLines={1}>
+                    {peekData.browserUrl}
+                  </Text>
+                  <SpringButton
+                    style={styles.oauthMobileBtn}
+                    onPress={() => Linking.openURL(peekData.browserUrl!).catch(() => {})}
+                  >
+                    <Globe size={12} color={COLORS.bg} />
+                    <Text style={styles.oauthMobileBtnText}>OPEN THIS MAC TAB ON PHONE</Text>
+                    <ExternalLink size={11} color={COLORS.bg} />
+                  </SpringButton>
+                </View>
+              ) : null}
+
+              {/* Live Continuous Video Stream of Mac Display (fadeDuration=0 prevents Android frame flicker!) */}
+              {peekLoading && !peekData?.imageBase64 ? (
+                <CussSmallArtLoader
+                  variant="card"
+                  title="LOCKING LIVE MAC MIRROR STREAM"
+                  subtitle="Streaming real-time display frames & PTY buffer over WebSocket…"
+                  accentColor={COLORS.amber}
+                />
+              ) : peekData?.ok && peekData.imageBase64 ? (
+                <View style={{ alignItems: 'center', gap: 6 }}>
+                  <Image
+                    source={{ uri: peekData.imageBase64 }}
+                    fadeDuration={0}
+                    style={{
+                      width: '100%',
+                      height: 250,
+                      borderRadius: 12,
+                      borderWidth: 1.5,
+                      borderColor: liveMirrorStreaming ? COLORS.lime : COLORS.borderHi,
+                      backgroundColor: '#05050A',
+                    }}
+                    resizeMode="contain"
+                  />
+                  <Text style={styles.diffModalSub}>
+                    LIVE STREAM // {new Date(peekData.capturedAt).toLocaleTimeString()} ·{' '}
+                    {liveMirrorStreaming ? 'AUTO-UPDATING' : 'PAUSED'}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.gitOutputBox}>
+                  <Text style={styles.gitOutputText}>
+                    {peekData?.hint ?? 'Unable to capture Mac screen.'}
+                  </Text>
+                </View>
+              )}
+
+              {/* REA 4427.index.js Repaint-Debug Live Terminal & Agent Stream Grid */}
+              <Text style={styles.diffSectionLabel}>
+                LIVE CURSOR AGENT &amp; TERMINAL STREAM GRID (REA 4427 MIRROR)
+              </Text>
+              <View style={styles.diffCodeBox}>
+                {peekData?.terminalLines && peekData.terminalLines.length > 0 ? (
+                  peekData.terminalLines.map((ln, idx) => {
+                    const isUser = ln.startsWith('$');
+                    const isTool = ln.startsWith('>');
+                    const isThink = ln.startsWith('~');
+                    const isAst = ln.startsWith('*');
+                    return (
+                      <Text
+                        key={idx}
+                        selectable
+                        style={[
+                          styles.diffLineText,
+                          isUser && { color: COLORS.lime },
+                          isTool && { color: COLORS.cyan },
+                          isThink && { color: COLORS.magenta },
+                          isAst && { color: COLORS.bone },
+                        ]}
+                      >
+                        {ln}
+                      </Text>
+                    );
+                  })
+                ) : (
+                  <Text style={[styles.diffLineText, { color: COLORS.muted }]}>
+                    [IDLE] Waiting for next agent/terminal stream event…
+                  </Text>
+                )}
+              </View>
+
+              {/* Active Mac Child Processes */}
+              {peekData?.activeProcesses && peekData.activeProcesses.length > 0 ? (
+                <>
+                  <Text style={styles.diffSectionLabel}>
+                    ACTIVE MAC PROCESSES ({peekData.activeProcesses.length})
+                  </Text>
+                  <View style={styles.diffCodeBox}>
+                    {peekData.activeProcesses.map((proc, i) => (
+                      <Text key={i} style={[styles.diffLineText, { color: COLORS.cyan }]}>
+                        {proc}
+                      </Text>
+                    ))}
+                  </View>
+                </>
+              ) : null}
+            </ScrollView>
           </View>
         </View>
       </Modal>

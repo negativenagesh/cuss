@@ -532,7 +532,7 @@ export default function CursorComposer({
       {/* MODAL 1: Cursor Model & 4D Parameter Matrix Sheet */}
       <Modal
         visible={modelModalOpen}
-        animationType="slide"
+        animationType="fade"
         transparent
         onRequestClose={() => setModelModalOpen(false)}
       >
@@ -745,7 +745,7 @@ export default function CursorComposer({
       {/* MODAL 2: @File, @Git, /Commands & @Subagents Context Drawer */}
       <Modal
         visible={contextModalOpen}
-        animationType="slide"
+        animationType="fade"
         transparent
         onRequestClose={() => setContextModalOpen(false)}
       >

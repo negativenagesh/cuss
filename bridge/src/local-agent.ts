@@ -115,6 +115,8 @@ export class LocalAgentService extends EventEmitter {
   private verifiedAccount: { email?: string; displayName?: string } = {};
   private loginProc: ChildProcess | null = null;
   private currentLoginUrl: string | undefined;
+  private mirrorFrameSeq = 0;
+  private warmChatIds = new Map<string, string>();
   private static readonly EVENT_BUFFER = 250;
 
   /**
@@ -226,10 +228,22 @@ export class LocalAgentService extends EventEmitter {
   ) {
     super();
     this.load();
-    // Warm verified account info on boot if using the real Cursor CLI
+    // Warm verified account info and pre-allocate a chat ID for the active workspace on boot
     if (this.cliPath === CLI) {
       void this.getAuthStatus().catch(() => {});
+      const topProj = this.listProjects()[0]?.path;
+      if (topProj) this.replenishWarmChatId(topProj);
     }
+  }
+
+  private replenishWarmChatId(cwd: string) {
+    if (this.cliPath !== CLI || !cwd || !existsSync(cwd) || this.warmChatIds.has(cwd)) return;
+    this.exec([...this.cmd('create-chat')], cwd)
+      .then((out) => {
+        const id = out.trim().split(/\s+/).pop();
+        if (id) this.warmChatIds.set(cwd, id);
+      })
+      .catch(() => {});
   }
 
   list(): LocalAgent[] {
@@ -683,37 +697,141 @@ export class LocalAgentService extends EventEmitter {
     return { opened: true };
   }
 
-  /** Capture a live compressed JPEG screenshot of the Mac display + frontmost app name so the phone can peek at the Mac browser/IDE. */
-  async captureMacScreen(): Promise<{
+  /**
+   * Capture a live REA-inspired Mirror Frame (`4427.index.js` Repaint-Debug + macOS Display + Browser + Process Tree):
+   * - Compressed JPEG display frame (~60KB, with cursor `-C`)
+   * - Frontmost macOS application & active window title
+   * - Active browser tab URL & title (Chrome / Brave / Safari)
+   * - Live terminal/event buffer lines + running Cursor/shell child processes
+   */
+  async captureMacScreen(agentId?: string): Promise<{
     ok: boolean;
+    seq: number;
     frontApp: string;
+    windowTitle?: string;
+    browserUrl?: string;
+    browserTitle?: string;
+    activeProcesses: string[];
+    terminalLines: string[];
     imageBase64?: string;
     capturedAt: string;
     hint?: string;
   }> {
+    const seq = ++this.mirrorFrameSeq;
     const imgPath = '/tmp/cuss-mac-peek.jpg';
-    const frontApp = await this.execOsascript(
-      'tell application "System Events" to get name of first process whose frontmost is true',
-    )
-      .then((s) => s.trim())
-      .catch(() => 'macOS Desktop');
 
-    const capCode = await new Promise<number>((resolve) => {
-      const p = spawn('/usr/sbin/screencapture', ['-x', '-C', '-t', 'jpg', imgPath], { env: RUN_ENV });
-      p.on('error', () => resolve(1));
-      p.on('exit', (c) => resolve(c ?? 1));
-    });
+    const metaScript = `
+tell application "System Events"
+  set frontProc to first process whose frontmost is true
+  set appName to name of frontProc
+  set winTitle to ""
+  try
+    set winTitle to name of front window of frontProc
+  end try
+end tell
+set bUrl to ""
+set bTitle to ""
+try
+  if appName is "Google Chrome" then
+    tell application "Google Chrome"
+      set bUrl to URL of active tab of front window
+      set bTitle to title of active tab of front window
+    end tell
+  else if appName is "Brave Browser" then
+    tell application "Brave Browser"
+      set bUrl to URL of active tab of front window
+      set bTitle to title of active tab of front window
+    end tell
+  else if appName is "Safari" then
+    tell application "Safari"
+      set bUrl to URL of current tab of front window
+      set bTitle to name of current tab of front window
+    end tell
+  end if
+end try
+return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle
+`;
+
+    const [metaRaw, psRaw, capCode] = await Promise.all([
+      this.execOsascript(metaScript).catch(() => 'macOS Desktop||||||'),
+      new Promise<string>((resolve) => {
+        const p = spawn('/bin/ps', ['-Ao', 'pid,comm,args'], { env: RUN_ENV });
+        let out = '';
+        p.stdout.on('data', (d) => (out += d.toString('utf8')));
+        p.on('error', () => resolve(''));
+        p.on('exit', () => resolve(out));
+      }),
+      new Promise<number>((resolve) => {
+        const p = spawn(
+          '/bin/zsh',
+          [
+            '-c',
+            '/usr/sbin/screencapture -x -C -t jpg /tmp/cuss-mac-peek.jpg && /usr/bin/sips -Z 920 -s formatOptions 55 /tmp/cuss-mac-peek.jpg >/dev/null 2>&1',
+          ],
+          { env: RUN_ENV },
+        );
+        p.on('error', () => resolve(1));
+        p.on('exit', (c) => resolve(c ?? 1));
+      }),
+    ]);
+
+    const [frontAppRaw, winTitleRaw, bUrlRaw, bTitleRaw] = metaRaw.trim().split('|||');
+    const frontApp = (frontAppRaw || 'macOS Desktop').trim();
+    const windowTitle = (winTitleRaw || '').trim() || undefined;
+    const browserUrl = (bUrlRaw || '').trim() || undefined;
+    const browserTitle = (bTitleRaw || '').trim() || undefined;
+
+    const activeProcesses = psRaw
+      .split(/\r?\n/)
+      .filter((ln) => /cursor-agent|gcloud|bq |git |python|pytest|vitest/i.test(ln) && !/grep/i.test(ln))
+      .map((ln) => ln.trim().replace(/\s+/g, ' ').slice(0, 110))
+      .slice(0, 8);
+
+    // Build live 24-line terminal grid snapshot (inspired by REA 4427.index.js getSnapshot().lines)
+    const targetId = agentId || [...this.running.keys()][0] || this.list()[0]?.id;
+    const evts = targetId ? this.getRecentEvents(targetId).slice(-14) : [];
+    const terminalLines: string[] = [];
+    for (const ev of evts) {
+      const r = ev.raw as any;
+      if (r?.type === 'cuss_user_turn') {
+        terminalLines.push(`$ [USER] ${String(r.text ?? '').replace(/\s+/g, ' ').slice(0, 88)}`);
+      } else if (r?.type === 'thinking' && r?.text) {
+        terminalLines.push(`~ [THINK] ${String(r.text).replace(/\s+/g, ' ').slice(-88)}`);
+      } else if (r?.type === 'tool_call') {
+        const tn = Object.keys(r.tool_call ?? {})[0] ?? 'tool';
+        const args = r.tool_call?.[tn]?.args ?? {};
+        const sum = args.command ?? args.path ?? args.file_path ?? tn;
+        terminalLines.push(`> [${tn.replace(/ToolCall$/i, '').toUpperCase()}] ${String(sum).slice(0, 80)}`);
+        const out =
+          r.tool_call?.[tn]?.result?.success?.interleavedOutput ??
+          r.tool_call?.[tn]?.result?.success?.stdout;
+        if (out) {
+          for (const ln of String(out).trim().split(/\r?\n/).slice(-4)) {
+            terminalLines.push(`  ${ln.slice(0, 92)}`);
+          }
+        }
+      } else if (r?.type === 'assistant') {
+        const txt = (r.message?.content ?? [])
+          .filter((c: any) => c?.type === 'text')
+          .map((c: any) => String(c.text ?? ''))
+          .join(' ');
+        if (txt.trim()) {
+          terminalLines.push(`* [ASSISTANT] ${txt.trim().replace(/\s+/g, ' ').slice(-88)}`);
+        }
+      }
+    }
 
     if (capCode === 0 && existsSync(imgPath)) {
-      await new Promise<void>((resolve) => {
-        const p = spawn('/usr/bin/sips', ['-Z', '1100', imgPath], { env: RUN_ENV });
-        p.on('error', () => resolve());
-        p.on('exit', () => resolve());
-      });
       const b64 = readFileSync(imgPath).toString('base64');
       return {
         ok: true,
+        seq,
         frontApp,
+        windowTitle,
+        browserUrl,
+        browserTitle,
+        activeProcesses,
+        terminalLines: terminalLines.slice(-20),
         imageBase64: `data:image/jpeg;base64,${b64}`,
         capturedAt: new Date().toISOString(),
       };
@@ -721,10 +839,47 @@ export class LocalAgentService extends EventEmitter {
 
     return {
       ok: false,
+      seq,
       frontApp,
+      windowTitle,
+      browserUrl,
+      browserTitle,
+      activeProcesses,
+      terminalLines: terminalLines.slice(-20),
       capturedAt: new Date().toISOString(),
       hint: 'Grant Screen Recording permission to Terminal / node in macOS System Settings -> Privacy & Security -> Screen Recording to view the live Mac screen.',
     };
+  }
+
+  /**
+   * Perform a remote control action on the Mac from the Live Mirror view:
+   * - `focus-app`: Activate Cursor, Terminal, Google Chrome, or Brave Browser on the Mac
+   * - `send-key`: Send Enter, Escape, Space, or Cmd+R to the frontmost Mac window
+   */
+  async performMacAction(action: {
+    type: 'focus-app' | 'send-key';
+    target: string;
+  }): Promise<{ ok: boolean }> {
+    if (action.type === 'focus-app' && action.target) {
+      await this.execOsascript(`tell application ${JSON.stringify(action.target)} to activate`).catch(
+        () => {},
+      );
+      return { ok: true };
+    }
+    if (action.type === 'send-key') {
+      const keyMap: Record<string, string> = {
+        enter: 'key code 36',
+        escape: 'key code 53',
+        space: 'key code 49',
+        reload: 'keystroke "r" using command down',
+      };
+      const cmd = keyMap[action.target.toLowerCase()];
+      if (cmd) {
+        await this.execOsascript(`tell application "System Events" to ${cmd}`).catch(() => {});
+      }
+      return { ok: true };
+    }
+    return { ok: false };
   }
 
   /** Transcribe base64 recorded audio from the mobile voice mic via macOS SFSpeechRecognizer. */
@@ -837,14 +992,21 @@ print(output)
     return this.list();
   }
 
-  /** cursor agent create-chat -> chatId */
+  /** cursor agent create-chat -> chatId (uses pre-warmed ID in <1ms when available!) */
   async createChat(
     cwd: string,
     firstPrompt: string,
     modelOrOptions?: string | PromptTurnOptions,
   ): Promise<LocalAgent> {
-    const id = (await this.exec([...this.cmd('create-chat')], cwd)).trim().split(/\s+/).pop()!;
+    let id = this.warmChatIds.get(cwd);
+    if (id) {
+      this.warmChatIds.delete(cwd);
+    } else {
+      id = (await this.exec([...this.cmd('create-chat')], cwd)).trim().split(/\s+/).pop()!;
+    }
     if (!id) throw new Error('create-chat returned no id');
+    // Replenish a warm chat ID for the next spawn in the background
+    this.replenishWarmChatId(cwd);
 
     const opts: PromptTurnOptions =
       typeof modelOrOptions === 'string' ? { model: modelOrOptions } : modelOrOptions ?? {};

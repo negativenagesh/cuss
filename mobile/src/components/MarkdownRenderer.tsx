@@ -616,7 +616,7 @@ export function FileViewerModal({
       : [];
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <View style={styles.viewerBackdrop}>
         <View style={styles.viewerSheet}>
           {/* Top Header */}

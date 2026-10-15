@@ -26,6 +26,7 @@ export class LiveGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private runAbort = new Map<WebSocket, AbortController>();
   private localWatchers = new Set<WebSocket>();
   private localSubs = new Map<WebSocket, string>();
+  private mirrorActive = new Map<WebSocket, { active: boolean; agentId?: string }>();
   private lastListJson: string | null = null;
 
   constructor(
@@ -60,6 +61,7 @@ export class LiveGateway implements OnGatewayConnection, OnGatewayDisconnect {
   handleDisconnect(client: WebSocket) {
     this.stopWatching(client);
     this.stopRun(client);
+    this.stopMirror(client);
     this.localWatchers.delete(client);
     this.localSubs.delete(client);
   }
@@ -84,7 +86,33 @@ export class LiveGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return this.subscribeLocal(client, msg);
       case 'local:unsubscribe':
         return void this.localSubs.delete(client);
+      case 'mirror:subscribe':
+        return void this.startMirror(client, msg?.agentId);
+      case 'mirror:unsubscribe':
+        return this.stopMirror(client);
     }
+  }
+
+  private async startMirror(client: WebSocket, agentId?: string) {
+    this.stopMirror(client);
+    const state = { active: true, agentId };
+    this.mirrorActive.set(client, state);
+    while (state.active && client.readyState === client.OPEN) {
+      try {
+        const frame = await this.local.captureMacScreen(state.agentId);
+        if (!state.active || client.readyState !== client.OPEN) break;
+        this.send(client, { type: 'mirror:frame', frame });
+      } catch {
+        /* ignore single frame error */
+      }
+      await new Promise((r) => setTimeout(r, 550));
+    }
+  }
+
+  private stopMirror(client: WebSocket) {
+    const s = this.mirrorActive.get(client);
+    if (s) s.active = false;
+    this.mirrorActive.delete(client);
   }
 
   private watchAgents(client: WebSocket) {
