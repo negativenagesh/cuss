@@ -20,7 +20,7 @@ import {
   SpringButton,
 } from '../components/CussIcons';
 import { CussCyberOrbLottie, CussHazardStrip, CussSmallArtLoader } from '../components/CussArt';
-import { useStore } from '../store';
+import { detectLiveMacBridgeUrl, useStore } from '../store';
 import { COLORS, FONTS } from '../theme';
 
 /** Verify the bridge answers before saving anything (prevents silent bad URLs). */
@@ -47,7 +47,7 @@ export default function PairScreen() {
   const setPairing = useStore((s) => s.setPairing);
   const [permission, requestPermission] = useCameraPermissions();
   const [manual, setManual] = useState(false);
-  const [url, setUrl] = useState('http://192.168.1.10:4040');
+  const [url, setUrl] = useState(() => detectLiveMacBridgeUrl() ?? 'http://10.10.0.160:4040');
   const [token, setToken] = useState('');
   const [scanned, setScanned] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);

@@ -5,6 +5,7 @@ import {
   Get,
   HttpException,
   Inject,
+  Optional,
   Param,
   Post,
 } from '@nestjs/common';
@@ -13,7 +14,10 @@ import { CursorApi, CursorApiError, CreateAgentInput } from './cursor-api';
 /** REST surface for the phone app (SPEC.md §4). All routes need the pairing token. */
 @Controller('api')
 export class AgentsController {
-  constructor(@Inject(CursorApi) private readonly api: CursorApi | null) {}
+  constructor(
+    @Inject(CursorApi) private readonly api: CursorApi | null,
+    @Optional() @Inject('PAIRING_TOKEN') private readonly pairingToken?: string,
+  ) {}
 
   private client(): CursorApi {
     if (!this.api) {
@@ -34,7 +38,17 @@ export class AgentsController {
 
   @Get('health')
   health() {
-    return { ok: true, service: 'cuss-bridge', version: '0.4.0', time: new Date().toISOString() };
+    return { ok: true, service: 'cuss-bridge', version: '0.5.0', time: new Date().toISOString() };
+  }
+
+  @Get('auto-pair')
+  autoPair() {
+    return {
+      ok: true,
+      service: 'cuss-bridge',
+      version: '0.5.0',
+      token: this.pairingToken ?? '',
+    };
   }
 
   @Get('agents')
