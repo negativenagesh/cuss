@@ -27,7 +27,7 @@ Modern AI-assisted software development happens inside **Cursor** on a developer
 
 ---
 
-## Visual Walkthrough: macOS Installer, Menu Bar App, and Mobile Control Deck
+## Visual Walkthrough: macOS Installer and Menu Bar App
 
 ### 1. Self-Contained macOS Installer (`cuss.dmg` -> `Install CUSS.app`)
 
@@ -52,14 +52,6 @@ Modern AI-assisted software development happens inside **Cursor** on a developer
   - Click **CUSS** in the top macOS menu bar at any time.
   - Click **Pair Phone — Show QR Code & Control HUD** to display the scannable pairing QR code (`missioncontrol://pair?url=...&token=...`) and live network telemetry.
   - Use **Copy Mac Bridge URL**, **Copy Pairing Token**, **Sync Cursor Desktop Login Now**, or **Restart Background Services** with one click.
-
----
-
-### 3. Mobile Studio Deck: Plan & Usage, Directory Picker, and Zoomable Live Mirror
-
-<p align="center">
-  <img src="./assets/screenshots/cuss-mobile-overview.png" alt="CUSS Mobile Control Deck Overview" width="100%" />
-</p>
 
 ---
 
