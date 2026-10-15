@@ -7,10 +7,10 @@
 **A mobile engineering workstation for Android and iOS that drives your Mac's local Cursor CLI and IDE over a low-latency local bridge — with zero API keys, zero terminal setup, and full Cursor parity.**
 
 [![Release](https://img.shields.io/badge/RELEASE-v0.5.2-D4FF00?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases)
-[![Launch Video](https://img.shields.io/badge/LAUNCH_VIDEO-cuss--launch.mp4-FFB703?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases/download/v0.5.2/cuss-launch.mp4)
 [![Mac Installer](https://img.shields.io/badge/MACOS_INSTALLER-cuss.dmg-00F0FF?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases)
 [![Android APK](https://img.shields.io/badge/ANDROID_APP-cuss.apk-FF2A85?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases)
 [![Tests](https://img.shields.io/badge/VITEST-31%2F31_PASSING-10F59B?style=for-the-badge&labelColor=07070C)](#verification-and-test-suite)
+[![License](https://img.shields.io/badge/LICENSE-APACHE_2.0-A855F7?style=for-the-badge&labelColor=07070C)](./LICENSE)
 
 </div>
 
@@ -29,8 +29,6 @@ Modern AI-assisted software development happens inside **Cursor** on a developer
 ---
 
 ## Visual Walkthrough: macOS Installer, Menu Bar App, and Mobile Control Deck
-
-> **Launch Video (`cuss-launch.mp4`, 57s, 1080p with ElevenLabs Voiceover)**: [**Download / Watch `cuss-launch.mp4` on GitHub Releases**](https://github.com/negativenagesh/cuss/releases/download/v0.5.2/cuss-launch.mp4)
 
 ### 1. Self-Contained macOS Installer (`cuss.dmg` -> `Install CUSS.app`)
 
@@ -376,4 +374,4 @@ npm test
 
 ## License
 
-MIT
+Licensed under the [Apache License, Version 2.0](./LICENSE).
