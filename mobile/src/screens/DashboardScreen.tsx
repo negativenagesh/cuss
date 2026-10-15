@@ -11,6 +11,8 @@ import {
 import FadeIn from '../components/FadeIn';
 import ErrorBoundary from '../components/ErrorBoundary';
 import AgentField from '../components/AgentField';
+import CursorSettingsModal from '../components/CursorSettingsModal';
+import DirectoryPickerModal from '../components/DirectoryPickerModal';
 import {
   ArrowUpRight,
   Check,
@@ -23,6 +25,7 @@ import {
   ModeVectorIcon,
   Plus,
   RefreshCw,
+  SlidersHorizontal,
   SpringButton,
   Trash2,
   Unplug,
@@ -93,7 +96,10 @@ export default function DashboardScreen({ navigation }: any) {
     ideState,
     setIdeState,
     setModelCatalog,
+    projects,
     setProjects,
+    selectedCwd,
+    setSelectedCwd,
     setCursorSignedIn,
     clearPairing,
   } = useStore();
@@ -101,6 +107,9 @@ export default function DashboardScreen({ navigation }: any) {
   const [syncingIde, setSyncingIde] = useState(false);
   const [renamingAgent, setRenamingAgent] = useState<Agent | null>(null);
   const [renameText, setRenameText] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dirPickerOpen, setDirPickerOpen] = useState(false);
+  const [filterByDir, setFilterByDir] = useState(false);
 
   async function handleConfirmRename() {
     if (!renamingAgent || !renameText.trim()) return;
@@ -142,8 +151,21 @@ export default function DashboardScreen({ navigation }: any) {
 
   useEffect(() => {
     navigation.setOptions({
+      headerTitleStyle: {
+        fontFamily: FONTS.monoBold,
+        fontSize: 12.5,
+        color: COLORS.lime,
+      },
       headerRight: () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+          <SpringButton
+            onPress={() => setSettingsOpen(true)}
+            hitSlop={8}
+            style={[styles.unlinkBtn, { borderColor: COLORS.cyan, paddingHorizontal: 7 }]}
+          >
+            <SlidersHorizontal size={11} color={COLORS.cyan} />
+            <Text style={[styles.unlinkText, { color: COLORS.cyan, fontSize: 9 }]}>SETTINGS</Text>
+          </SpringButton>
           <SpringButton
             onPress={() => {
               Alert.alert(
@@ -163,15 +185,14 @@ export default function DashboardScreen({ navigation }: any) {
                 ],
               );
             }}
-            hitSlop={10}
-            style={[styles.unlinkBtn, { borderColor: COLORS.amber }]}
+            hitSlop={8}
+            style={[styles.unlinkBtn, { borderColor: COLORS.amber, paddingHorizontal: 7 }]}
           >
-            <X size={12} color={COLORS.amber} />
-            <Text style={[styles.unlinkText, { color: COLORS.amber }]}>SIGN OUT</Text>
+            <X size={11} color={COLORS.amber} />
+            <Text style={[styles.unlinkText, { color: COLORS.amber, fontSize: 9 }]}>OUT</Text>
           </SpringButton>
-          <SpringButton onPress={clearPairing} hitSlop={12} style={styles.unlinkBtn}>
-            <Unplug size={13} color={COLORS.magenta} />
-            <Text style={styles.unlinkText}>UNLINK</Text>
+          <SpringButton onPress={clearPairing} hitSlop={8} style={[styles.unlinkBtn, { paddingHorizontal: 7 }]}>
+            <Unplug size={11} color={COLORS.magenta} />
           </SpringButton>
         </View>
       ),
@@ -234,9 +255,21 @@ export default function DashboardScreen({ navigation }: any) {
   }, []);
 
   const isMac = mode === 'mac';
+  const activeCwd =
+    selectedCwd ||
+    ideState?.activeWorkspace?.path ||
+    (Array.isArray(projects) && projects[0]?.path) ||
+    '';
+  const activeDirShort = activeCwd
+    ? activeCwd.split('/').filter(Boolean).pop() || activeCwd
+    : 'Select Directory';
   const safeLocal = Array.isArray(localAgents) ? localAgents : [];
   const safeCloud = Array.isArray(agents) ? agents : [];
-  const shown: Agent[] = isMac ? safeLocal.map(toFieldAgent) : safeCloud;
+  const allMapped: Agent[] = isMac ? safeLocal.map(toFieldAgent) : safeCloud;
+  const shown: Agent[] =
+    isMac && filterByDir && activeCwd
+      ? allMapped.filter((a) => a.cwd === activeCwd)
+      : allMapped;
   const active = shown.filter((a) => a.status === 'ACTIVE' || a.status === 'running').length;
   const mcpList = Array.isArray(ideState?.mcpServers) ? ideState!.mcpServers : [];
 
@@ -317,7 +350,12 @@ export default function DashboardScreen({ navigation }: any) {
               {/* Bottom-Right Spawn CTA */}
               <SpringButton
                 style={styles.spawnFab}
-                onPress={() => navigation.navigate('CreateAgent', { kind: mode })}
+                onPress={() =>
+                  navigation.navigate('CreateAgent', {
+                    kind: mode,
+                    cwd: activeCwd || undefined,
+                  })
+                }
                 tiltOnPress
               >
                 <Plus size={16} color={COLORS.bg} strokeWidth={2.8} />
@@ -325,41 +363,54 @@ export default function DashboardScreen({ navigation }: any) {
               </SpringButton>
             </View>
 
-            {/* Live Mac IDE Telemetry Strip (from globalStorage/storage.json + mcp.json) */}
-            {isMac && ideState?.activeWorkspace ? (
+            {/* Interactive Working Directory Bar (Select Mac Directory + Filter Sessions) */}
+            {isMac ? (
               <View style={styles.ideTelemetryBar}>
-                <View style={styles.ideLiveBadge}>
-                  <View style={styles.ideLiveDot} />
-                  <Text style={styles.ideLiveBadgeText}>MAC IDE</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={styles.ideWorkspaceName} numberOfLines={1}>
-                      {ideState.activeWorkspace.name}
-                    </Text>
-                    {ideState.activeWorkspace.branch ? (
+                <SpringButton
+                  style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                  onPress={() => setDirPickerOpen(true)}
+                >
+                  <FolderGit2 size={15} color={COLORS.lime} />
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.ideWorkspaceName} numberOfLines={1}>
+                        {activeDirShort}
+                      </Text>
                       <View style={styles.ideBranchTag}>
-                        <GitBranch size={9} color={COLORS.cyan} />
-                        <Text style={styles.ideBranchText}>
-                          {ideState.activeWorkspace.branch}
-                        </Text>
+                        <Text style={styles.ideBranchText}>CHANGE DIR</Text>
                       </View>
-                    ) : null}
-                  </View>
-                  {mcpList.length > 0 ? (
+                    </View>
                     <Text style={styles.ideMcpText} numberOfLines={1}>
-                      MCP // {mcpList.map((m) => m.name).join(' · ')}
+                      {activeCwd || 'Tap to choose Mac project directory'}
                     </Text>
-                  ) : null}
-                </View>
+                  </View>
+                </SpringButton>
+
+                <SpringButton
+                  style={[
+                    styles.syncIdeBtn,
+                    filterByDir && { backgroundColor: COLORS.cyan, borderColor: COLORS.cyan },
+                  ]}
+                  onPress={() => setFilterByDir((v) => !v)}
+                >
+                  <Text
+                    style={[
+                      styles.syncIdeBtnText,
+                      filterByDir && { color: COLORS.bg },
+                    ]}
+                  >
+                    {filterByDir ? 'THIS DIR' : 'ALL DIRS'}
+                  </Text>
+                </SpringButton>
+
                 <SpringButton
                   style={styles.syncIdeBtn}
                   onPress={handleSyncIdeSessions}
                   disabled={syncingIde}
                   tiltOnPress
                 >
-                  <RefreshCw size={12} color={COLORS.lime} />
-                  <Text style={styles.syncIdeBtnText}>{syncingIde ? 'SYNC…' : 'SYNC IDE'}</Text>
+                  <RefreshCw size={11} color={COLORS.lime} />
+                  <Text style={styles.syncIdeBtnText}>{syncingIde ? '…' : 'SYNC'}</Text>
                 </SpringButton>
               </View>
             ) : null}
@@ -508,6 +559,19 @@ export default function DashboardScreen({ navigation }: any) {
           </View>
         </View>
       </Modal>
+
+      {/* Cursor Settings & Plan Usage Modal */}
+      <CursorSettingsModal
+        visible={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
+
+      {/* Mac Working Directory Picker Modal */}
+      <DirectoryPickerModal
+        visible={dirPickerOpen}
+        onClose={() => setDirPickerOpen(false)}
+        onSelectDirectory={(dir) => setSelectedCwd(dir)}
+      />
     </View>
   );
 }

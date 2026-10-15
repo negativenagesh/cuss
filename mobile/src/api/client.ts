@@ -374,3 +374,64 @@ export const localStop = (agentId: string) => api(`/api/local/agents/${agentId}/
 export const localShowOnMac = (agentId: string) => api(`/api/local/agents/${agentId}/show`, { method: 'POST' });
 export const localDetail = (agentId: string) =>
   api<{ agent: any; events: any[] }>(`/api/local/agents/${agentId}`);
+
+export interface CursorSettingsResponse {
+  account: {
+    email?: string;
+    displayName?: string;
+    userId?: number;
+    authId?: string;
+    signUpType?: string;
+    membershipType: string;
+    subscriptionStatus: string;
+  };
+  planInfo: {
+    planName: string;
+    price: string;
+    billingCycleStart?: string;
+    billingCycleEnd?: string;
+    includedUsagePeriod?: string;
+  };
+  planUsage: {
+    totalSpendCents: number;
+    includedSpendCents: number;
+    bonusSpendCents: number;
+    limitCents: number;
+    autoPercentUsed: number;
+    apiPercentUsed: number;
+    totalPercentUsed: number;
+    remainingBonus: boolean;
+    bonusTooltip: string;
+    displayMessage?: string;
+    autoModelSelectedDisplayMessage?: string;
+    namedModelSelectedDisplayMessage?: string;
+    autoBucketModels: string[];
+    noUsageBasedAllowed: boolean;
+  };
+  privacy: {
+    privacyMode: string;
+    ghostMode: boolean;
+  };
+  cliConfig: Record<string, any>;
+  desktopSettings: Record<string, any>;
+  savedPlans: { id: string; name: string; path: string }[];
+  mcpServers: { name: string; command?: string; url?: string }[];
+  localTelemetry: {
+    sessionCount: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+  };
+}
+
+export const localGetSettings = () =>
+  api<CursorSettingsResponse>('/api/local/settings', { timeoutMs: 12_000 });
+
+export const localUpdateSettings = (patch: {
+  cliConfig?: Record<string, any>;
+  desktopSettings?: Record<string, any>;
+}) =>
+  api<{ ok: boolean; cliConfig: Record<string, any>; desktopSettings: Record<string, any> }>(
+    '/api/local/settings',
+    { method: 'POST', body: patch, timeoutMs: 8_000 },
+  );

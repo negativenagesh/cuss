@@ -183,16 +183,28 @@ func mouseLocation() -> CGPoint {
 var dragging = false
 
 func mouseEvent(_ type: CGEventType, _ pt: CGPoint, button: CGMouseButton = .left) {
+    CGWarpMouseCursorPosition(pt)
     CGEvent(mouseEventSource: eventSource, mouseType: type, mouseCursorPosition: pt, mouseButton: button)?.post(tap: .cghidEventTap)
 }
 
-/// Persistent daemon: reads one command per line from stdin so every phone keystroke lands in ~1ms.
+func performScroll(dy: Int32, dx: Int32) {
+    // Post both line-unit and pixel-unit scroll wheel events so Cocoa, Electron (Cursor/Chrome), and Terminal all scroll smoothly.
+    if let lineEvt = CGEvent(scrollWheelEvent2Source: eventSource, units: .line, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) {
+        lineEvt.post(tap: .cghidEventTap)
+    }
+    if let pxEvt = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: 2, wheel1: dy * 14, wheel2: dx * 14, wheel3: 0) {
+        pxEvt.post(tap: .cghidEventTap)
+    }
+}
+
+/// Persistent daemon: reads one command per line from stdin so every phone keystroke/scroll/click lands in ~1ms.
 ///   type <base64-utf8>  key <keycode> [cmd,shift,alt,ctrl]  backspace <count>  focus
-///   moverel <dx> <dy>  down  up  clickhere  rightclickhere  scroll <dy> [dx]
+///   moverel <dx> <dy>  move <nx> <ny>  click <nx> <ny>  doubleclick <nx> <ny>  rightclick <nx> <ny>
+///   down  up  clickhere  rightclickhere  scroll <dy> [dx]  scrollat <nx> <ny> <dy> [dx]
 if args[1] == "daemon" {
     setvbuf(stdout, nil, _IOLBF, 0)
     while let line = readLine() {
-        let parts = line.split(separator: " ", maxSplits: 3).map(String.init)
+        let parts = line.split(separator: " ", maxSplits: 6).map(String.init)
         guard let cmd = parts.first else { continue }
         if cmd == "type", parts.count >= 2, let data = Data(base64Encoded: parts[1]), let text = String(data: data, encoding: .utf8) {
             typeUnicode(text)
@@ -213,6 +225,37 @@ if args[1] == "daemon" {
             let pt = CGPoint(x: max(0, min(width - 1, cur.x + dx)), y: max(0, min(height - 1, cur.y + dy)))
             mouseEvent(dragging ? .leftMouseDragged : .mouseMoved, pt)
             print("OK moverel \(Int(pt.x)),\(Int(pt.y))")
+        } else if (cmd == "move" || cmd == "click" || cmd == "doubleclick" || cmd == "rightclick"), parts.count >= 3 {
+            let nx = max(0.0, min(1.0, Double(parts[1]) ?? 0.5))
+            let ny = max(0.0, min(1.0, Double(parts[2]) ?? 0.5))
+            let pt = CGPoint(x: nx * width, y: ny * height)
+            mouseEvent(.mouseMoved, pt)
+            if cmd == "click" {
+                usleep(8000)
+                mouseEvent(.leftMouseDown, pt)
+                usleep(12000)
+                mouseEvent(.leftMouseUp, pt)
+            } else if cmd == "doubleclick" {
+                usleep(8000)
+                if let d1 = CGEvent(mouseEventSource: eventSource, mouseType: .leftMouseDown, mouseCursorPosition: pt, mouseButton: .left),
+                   let u1 = CGEvent(mouseEventSource: eventSource, mouseType: .leftMouseUp, mouseCursorPosition: pt, mouseButton: .left),
+                   let d2 = CGEvent(mouseEventSource: eventSource, mouseType: .leftMouseDown, mouseCursorPosition: pt, mouseButton: .left),
+                   let u2 = CGEvent(mouseEventSource: eventSource, mouseType: .leftMouseUp, mouseCursorPosition: pt, mouseButton: .left) {
+                    d1.setIntegerValueField(.mouseEventClickState, value: 1)
+                    u1.setIntegerValueField(.mouseEventClickState, value: 1)
+                    d2.setIntegerValueField(.mouseEventClickState, value: 2)
+                    u2.setIntegerValueField(.mouseEventClickState, value: 2)
+                    d1.post(tap: .cghidEventTap); u1.post(tap: .cghidEventTap)
+                    usleep(18000)
+                    d2.post(tap: .cghidEventTap); u2.post(tap: .cghidEventTap)
+                }
+            } else if cmd == "rightclick" {
+                usleep(8000)
+                mouseEvent(.rightMouseDown, pt, button: .right)
+                usleep(12000)
+                mouseEvent(.rightMouseUp, pt, button: .right)
+            }
+            print("OK \(cmd) \(Int(pt.x)),\(Int(pt.y))")
         } else if cmd == "down" {
             dragging = true
             mouseEvent(.leftMouseDown, mouseLocation())
@@ -229,10 +272,20 @@ if args[1] == "daemon" {
             let pt = mouseLocation()
             mouseEvent(.rightMouseDown, pt, button: .right); usleep(14000); mouseEvent(.rightMouseUp, pt, button: .right)
             print("OK rightclickhere")
+        } else if cmd == "scrollat", parts.count >= 4 {
+            let nx = max(0.0, min(1.0, Double(parts[1]) ?? 0.5))
+            let ny = max(0.0, min(1.0, Double(parts[2]) ?? 0.5))
+            let dy = Int32(parts[3]) ?? -5
+            let dx = parts.count >= 5 ? (Int32(parts[4]) ?? 0) : 0
+            let pt = CGPoint(x: nx * width, y: ny * height)
+            mouseEvent(.mouseMoved, pt)
+            usleep(4000)
+            performScroll(dy: dy, dx: dx)
+            print("OK scrollat \(Int(pt.x)),\(Int(pt.y)) \(dy)")
         } else if cmd == "scroll", parts.count >= 2 {
             let dy = Int32(parts[1]) ?? -5
             let dx = parts.count >= 3 ? (Int32(parts[2]) ?? 0) : 0
-            CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0)?.post(tap: .cghidEventTap)
+            performScroll(dy: dy, dx: dx)
             print("OK scroll \(dy)")
         } else if cmd == "ping" {
             print("PONG")

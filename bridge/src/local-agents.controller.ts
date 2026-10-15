@@ -94,6 +94,22 @@ export class LocalAgentsController {
     return this.local.browseDirs(dirPath?.trim() || undefined);
   }
 
+  @Get('settings')
+  async getSettings() {
+    return await this.local.getCursorSettingsAndUsage();
+  }
+
+  @Post('settings')
+  updateSettings(
+    @Body()
+    body: {
+      cliConfig?: Record<string, any>;
+      desktopSettings?: Record<string, any>;
+    },
+  ) {
+    return this.local.updateCursorSettings(body ?? {});
+  }
+
   @Get('git-diff')
   async gitDiff(@Query('cwd') cwd?: string) {
     if (!cwd?.trim()) {

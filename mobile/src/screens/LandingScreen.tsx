@@ -12,6 +12,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import Svg, { Circle, Defs, Line, LinearGradient, Path, Polygon, Rect, Stop } from 'react-native-svg';
 import { CussSmallArtLoader } from '../components/CussArt';
+import CursorSettingsModal from '../components/CursorSettingsModal';
+import DirectoryPickerModal from '../components/DirectoryPickerModal';
 import {
   ArrowUpRight,
   Check,
@@ -22,6 +24,7 @@ import {
   GitBranch,
   Globe,
   Laptop,
+  SlidersHorizontal,
   Sparkles,
   SpringButton,
   Unplug,
@@ -274,7 +277,10 @@ export default function LandingScreen({ navigation }: any) {
     ideState,
     setIdeState,
     setModelCatalog,
+    projects,
     setProjects,
+    selectedCwd,
+    setSelectedCwd,
     clearPairing,
   } = useStore();
 
@@ -286,6 +292,8 @@ export default function LandingScreen({ navigation }: any) {
   const [pendingLoginUrl, setPendingLoginUrl] = useState<string | undefined>(undefined);
   const [pkceSession, setPkceSession] = useState<{ uuid: string; verifier: string } | null>(null);
   const [manualSignedOut, setManualSignedOut] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dirPickerOpen, setDirPickerOpen] = useState(false);
 
   // Choreographed Entrance (@motion-design 8-Step Checklist: MD3 Emphasized Decelerate + <400ms total stagger)
   const monolithOpacity = useSharedValue(0);
@@ -540,6 +548,11 @@ export default function LandingScreen({ navigation }: any) {
   const safeLocal = Array.isArray(localAgents) ? localAgents : [];
   const activeWs = ideState?.activeWorkspace;
   const displayEmail = accountEmail || detectedMacEmail;
+  const activeDirPath =
+    selectedCwd || activeWs?.path || (Array.isArray(projects) && projects[0]?.path) || '';
+  const activeDirName = activeDirPath
+    ? activeDirPath.split('/').filter(Boolean).pop() || activeDirPath
+    : activeWs?.name || 'Select Mac Folder';
 
   return (
     <View style={styles.root}>
@@ -563,6 +576,13 @@ export default function LandingScreen({ navigation }: any) {
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <SpringButton
+            style={[styles.signOutChip, { borderColor: COLORS.cyan }]}
+            onPress={() => setSettingsOpen(true)}
+          >
+            <SlidersHorizontal size={11} color={COLORS.cyan} />
+            <Text style={[styles.signOutChipText, { color: COLORS.cyan }]}>SETTINGS</Text>
+          </SpringButton>
           {cursorSignedIn ? (
             <SpringButton style={styles.signOutChip} onPress={handleSignOut}>
               <X size={11} color={COLORS.amber} />
@@ -616,13 +636,16 @@ export default function LandingScreen({ navigation }: any) {
           </Text>
         </Animated.View>
 
-        {/* Clean Architectural Telemetry Strip */}
+        {/* Clean Architectural Telemetry Strip + Working Directory Selector */}
         <Animated.View style={[styles.telemetryCard, telemetryAnimStyle]}>
-          <View style={styles.telemetryRow}>
-            <Laptop size={13} color={COLORS.lime} />
-            <Text style={styles.telemetryLabel}>MAC IDE:</Text>
+          <SpringButton
+            style={styles.telemetryRow}
+            onPress={() => setDirPickerOpen(true)}
+          >
+            <FolderGit2 size={13} color={COLORS.lime} />
+            <Text style={styles.telemetryLabel}>WORK DIR:</Text>
             <Text style={styles.telemetryValue} numberOfLines={1}>
-              {activeWs ? activeWs.name : 'Cursor Ready'}
+              {activeDirName}
             </Text>
             {activeWs?.branch ? (
               <View style={styles.miniTag}>
@@ -630,22 +653,28 @@ export default function LandingScreen({ navigation }: any) {
                 <Text style={styles.miniTagText}>{activeWs.branch}</Text>
               </View>
             ) : null}
-          </View>
+            <View style={[styles.miniTag, { borderColor: COLORS.lime, backgroundColor: COLORS.limeDim }]}>
+              <Text style={[styles.miniTagText, { color: COLORS.lime }]}>SELECT DIR</Text>
+            </View>
+          </SpringButton>
 
           <View style={styles.telemetryDivider} />
 
-          <View style={styles.telemetryRow}>
+          <SpringButton
+            style={styles.telemetryRow}
+            onPress={() => setSettingsOpen(true)}
+          >
             <Cpu size={13} color={COLORS.cyan} />
             <Text style={styles.telemetryLabel}>ACCOUNT:</Text>
             <Text style={styles.telemetryValue} numberOfLines={1}>
               {displayEmail ? displayEmail : 'Sign in to Cursor to unlock'}
             </Text>
-            <View style={[styles.miniTag, { borderColor: COLORS.lime }]}>
-              <Text style={[styles.miniTagText, { color: COLORS.lime }]}>
-                {safeLocal.length} CHATS
+            <View style={[styles.miniTag, { borderColor: COLORS.cyan }]}>
+              <Text style={[styles.miniTagText, { color: COLORS.cyan }]}>
+                PLAN &amp; USAGE
               </Text>
             </View>
-          </View>
+          </SpringButton>
         </Animated.View>
       </View>
 
@@ -740,14 +769,34 @@ export default function LandingScreen({ navigation }: any) {
 
             <SpringButton
               style={styles.quickSpawnBtn}
-              onPress={() => navigation.navigate('CreateAgent', { kind: 'mac' })}
+              onPress={() =>
+                navigation.navigate('CreateAgent', {
+                  kind: 'mac',
+                  cwd: activeDirPath || undefined,
+                })
+              }
             >
               <FolderGit2 size={14} color={COLORS.cyan} />
-              <Text style={styles.quickSpawnText}>SPAWN NEW MAC AGENT DIRECTLY</Text>
+              <Text style={styles.quickSpawnText} numberOfLines={1}>
+                SPAWN AGENT IN {activeDirName.toUpperCase()}
+              </Text>
             </SpringButton>
           </>
         )}
       </Animated.View>
+
+      {/* Cursor Settings & Plan Usage Modal */}
+      <CursorSettingsModal
+        visible={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
+
+      {/* Mac Working Directory Picker Modal */}
+      <DirectoryPickerModal
+        visible={dirPickerOpen}
+        onClose={() => setDirPickerOpen(false)}
+        onSelectDirectory={(dir) => setSelectedCwd(dir)}
+      />
     </View>
   );
 }

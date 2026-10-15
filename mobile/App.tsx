@@ -122,8 +122,8 @@ export default function App() {
             headerStyle: { backgroundColor: COLORS.bg },
             headerTintColor: COLORS.lime,
             headerTitleStyle: {
-              fontFamily: FONTS.mogi,
-              fontSize: 22,
+              fontFamily: FONTS.monoBold,
+              fontSize: 13.5,
               color: COLORS.lime,
             },
             contentStyle: { backgroundColor: COLORS.bg },

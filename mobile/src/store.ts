@@ -107,7 +107,7 @@ export interface ProjectEntry {
   name: string;
   branch?: string;
   activeInIde?: boolean;
-  source?: 'ide-active' | 'ide-history' | 'session' | 'downloads';
+  source?: 'ide-active' | 'ide-history' | 'session' | 'downloads' | 'worktree';
 }
 
 export interface CursorPlanEntry {
@@ -304,6 +304,7 @@ interface DeviceStateSnapshot {
   deletedChatIds?: string[];
   macSnippets?: string[];
   macEnterPolicies?: Record<string, MacEnterPolicy>;
+  selectedCwd?: string | null;
 }
 
 /** How the phone's Enter key is delivered to a given Mac app in LIVE KEYBOARD mode. */
@@ -401,6 +402,8 @@ interface State {
   selectedFast: boolean;
   selectedThinking: boolean;
   hydrated: boolean;
+  selectedCwd: string | null;
+  setSelectedCwd: (cwd: string | null) => void;
   macSnippets: string[];
   macEnterPolicies: Record<string, MacEnterPolicy>;
   addMacSnippet: (text: string) => void;
@@ -448,6 +451,12 @@ export const useStore = create<State>((set, get) => ({
   selectedFast: false,
   selectedThinking: true,
   hydrated: false,
+  selectedCwd: null,
+  setSelectedCwd: (cwd) => {
+    const clean = cwd ? String(cwd).trim() : null;
+    writeDeviceStateSnapshot({ selectedCwd: clean });
+    set({ selectedCwd: clean });
+  },
   macSnippets: [],
   macEnterPolicies: {},
   addMacSnippet: (text) => {
@@ -529,6 +538,7 @@ export const useStore = create<State>((set, get) => ({
       accountEmail: snap.accountEmail ?? null,
       cursorSignedIn,
       deletedChatIds: Array.isArray(snap.deletedChatIds) ? snap.deletedChatIds : [],
+      selectedCwd: snap.selectedCwd ?? null,
       macSnippets: Array.isArray(snap.macSnippets) ? snap.macSnippets : [],
       macEnterPolicies: snap.macEnterPolicies && typeof snap.macEnterPolicies === 'object' ? snap.macEnterPolicies : {},
       hydrated: true,

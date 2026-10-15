@@ -657,6 +657,299 @@ export class LocalAgentService extends EventEmitter {
     return browseMacDirectories(dirPath);
   }
 
+  /**
+   * Fetch live Cursor Plan, Usage, Billing, CLI Config (`~/.cursor/cli-config.json`),
+   * User Settings (`~/Library/Application Support/Cursor/User/settings.json`), Privacy Mode,
+   * Saved Plans Registry, and MCP Servers (`~/.cursor/mcp.json`).
+   */
+  async getCursorSettingsAndUsage(): Promise<{
+    account: {
+      email?: string;
+      displayName?: string;
+      userId?: number;
+      authId?: string;
+      signUpType?: string;
+      membershipType: string;
+      subscriptionStatus: string;
+    };
+    planInfo: {
+      planName: string;
+      price: string;
+      billingCycleStart?: string;
+      billingCycleEnd?: string;
+      includedUsagePeriod?: string;
+    };
+    planUsage: {
+      totalSpendCents: number;
+      includedSpendCents: number;
+      bonusSpendCents: number;
+      limitCents: number;
+      autoPercentUsed: number;
+      apiPercentUsed: number;
+      totalPercentUsed: number;
+      remainingBonus: boolean;
+      bonusTooltip: string;
+      displayMessage?: string;
+      autoModelSelectedDisplayMessage?: string;
+      namedModelSelectedDisplayMessage?: string;
+      autoBucketModels: string[];
+      noUsageBasedAllowed: boolean;
+    };
+    privacy: {
+      privacyMode: string;
+      ghostMode: boolean;
+    };
+    cliConfig: Record<string, any>;
+    desktopSettings: Record<string, any>;
+    savedPlans: { id: string; name: string; path: string }[];
+    mcpServers: { name: string; command?: string; url?: string }[];
+    localTelemetry: {
+      sessionCount: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+    };
+  }> {
+    this.syncAuthFromCursorDesktop();
+
+    // 1. Read token & cached values from state.vscdb / auth.json
+    const queryDb = (key: string): string => {
+      if (!existsSync(DESKTOP_STATE_DB_PATH)) return '';
+      try {
+        return execFileSync(
+          '/usr/bin/sqlite3',
+          [DESKTOP_STATE_DB_PATH, `SELECT value FROM ItemTable WHERE key = '${key}';`],
+          { encoding: 'utf8', timeout: 2500 },
+        ).trim();
+      } catch {
+        return '';
+      }
+    };
+
+    let accessToken = queryDb('cursorAuth/accessToken');
+    if (!accessToken && existsSync(CLI_AUTH_JSON_PATH)) {
+      try {
+        const j = JSON.parse(readFileSync(CLI_AUTH_JSON_PATH, 'utf8'));
+        accessToken = j.accessToken || '';
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const cachedEmail = queryDb('cursorAuth/cachedEmail');
+    const cachedSignUpType = queryDb('cursorAuth/cachedSignUpType') || 'Auth_0';
+    const stripeMembershipType = queryDb('cursorAuth/stripeMembershipType') || 'ultra';
+    const stripeSubscriptionStatus = queryDb('cursorAuth/stripeSubscriptionStatus') || 'active';
+    const privacyRaw = queryDb('cursorai/donotchange/newPrivacyMode2');
+    const planRegistryRaw = queryDb('composer.planRegistry');
+
+    let privacyMode = 'PRIVACY_MODE_NO_TRAINING';
+    try {
+      if (privacyRaw) privacyMode = JSON.parse(privacyRaw).privacyMode || privacyMode;
+    } catch {
+      /* ignore */
+    }
+
+    const savedPlans: { id: string; name: string; path: string }[] = [];
+    try {
+      if (planRegistryRaw) {
+        const reg = JSON.parse(planRegistryRaw);
+        for (const [k, v] of Object.entries(reg as Record<string, any>)) {
+          savedPlans.push({
+            id: String(v?.id || k),
+            name: String(v?.name || k),
+            path: String(v?.uri?.fsPath || ''),
+          });
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    // 2. Read ~/.cursor/cli-config.json and Desktop settings.json
+    const cliConfigPath = join(homedir(), '.cursor', 'cli-config.json');
+    let cliConfig: Record<string, any> = {};
+    if (existsSync(cliConfigPath)) {
+      try {
+        cliConfig = JSON.parse(readFileSync(cliConfigPath, 'utf8'));
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const desktopSettingsPath = join(
+      homedir(),
+      'Library',
+      'Application Support',
+      'Cursor',
+      'User',
+      'settings.json',
+    );
+    let desktopSettings: Record<string, any> = {};
+    if (existsSync(desktopSettingsPath)) {
+      try {
+        desktopSettings = JSON.parse(readFileSync(desktopSettingsPath, 'utf8'));
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // 3. Query live Cursor DashboardService endpoints if accessToken is present
+    const postDashboard = async (method: string): Promise<any> => {
+      if (!accessToken) return null;
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 5000);
+        const res = await fetch(`https://api2.cursor.sh/aiserver.v1.DashboardService/${method}`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
+          },
+          body: '{}',
+          signal: ctrl.signal,
+        });
+        clearTimeout(t);
+        if (!res.ok) return null;
+        return await res.json();
+      } catch {
+        return null;
+      }
+    };
+
+    const [planInfoRes, usageRes, hardLimitRes] = await Promise.all([
+      postDashboard('GetPlanInfo'),
+      postDashboard('GetCurrentPeriodUsage'),
+      postDashboard('GetHardLimit'),
+    ]);
+
+    const acct = this.getAccountInfo();
+    const pu = usageRes?.planUsage ?? {};
+    const pi = planInfoRes?.planInfo ?? {};
+    const ide = this.getIdeState();
+
+    // 4. Aggregate local CUSS token usage
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheReadTokens = 0;
+    const allAgents = this.list();
+    for (const ag of allAgents) {
+      inputTokens += Number(ag.usage?.inputTokens ?? 0);
+      outputTokens += Number(ag.usage?.outputTokens ?? 0);
+      cacheReadTokens += Number(ag.usage?.cacheReadTokens ?? 0);
+    }
+
+    return {
+      account: {
+        email: acct.email || cachedEmail || cliConfig?.authInfo?.email,
+        displayName: acct.displayName || cliConfig?.authInfo?.displayName,
+        userId: cliConfig?.authInfo?.userId,
+        authId: cliConfig?.authInfo?.authId,
+        signUpType: cachedSignUpType,
+        membershipType: (pi.planName || stripeMembershipType || 'Ultra').toUpperCase(),
+        subscriptionStatus: stripeSubscriptionStatus,
+      },
+      planInfo: {
+        planName: pi.planName || stripeMembershipType.toUpperCase() || 'Ultra',
+        price: pi.price || '$200/mo',
+        billingCycleStart: usageRes?.billingCycleStart,
+        billingCycleEnd: usageRes?.billingCycleEnd || pi.billingCycleEnd,
+        includedUsagePeriod: pi.includedUsagePeriod || 'INCLUDED_USAGE_PERIOD_MONTHLY',
+      },
+      planUsage: {
+        totalSpendCents: Number(pu.totalSpend ?? 0),
+        includedSpendCents: Number(pu.includedSpend ?? 0),
+        bonusSpendCents: Number(pu.bonusSpend ?? 0),
+        limitCents: Number(pu.limit ?? 40000),
+        autoPercentUsed: Number(pu.autoPercentUsed ?? 0),
+        apiPercentUsed: Number(pu.apiPercentUsed ?? 0),
+        totalPercentUsed: Number(pu.totalPercentUsed ?? 0),
+        remainingBonus: Boolean(pu.remainingBonus),
+        bonusTooltip:
+          pu.bonusTooltip ||
+          "We work with model providers to give you free usage beyond what you've purchased.",
+        displayMessage: usageRes?.displayMessage,
+        autoModelSelectedDisplayMessage: usageRes?.autoModelSelectedDisplayMessage,
+        namedModelSelectedDisplayMessage: usageRes?.namedModelSelectedDisplayMessage,
+        autoBucketModels: Array.isArray(usageRes?.autoBucketModels)
+          ? usageRes.autoBucketModels
+          : ['default', 'composer-2.5', 'grok-4.7', 'grok-4.6', 'grok-4.5'],
+        noUsageBasedAllowed: Boolean(hardLimitRes?.noUsageBasedAllowed ?? true),
+      },
+      privacy: {
+        privacyMode,
+        ghostMode: Boolean(cliConfig?.privacyCache?.ghostMode ?? true),
+      },
+      cliConfig,
+      desktopSettings,
+      savedPlans,
+      mcpServers: ide.mcpServers ?? [],
+      localTelemetry: {
+        sessionCount: allAgents.length,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+      },
+    };
+  }
+
+  /**
+   * Update Cursor CLI settings (`~/.cursor/cli-config.json`) and/or Cursor Desktop user settings
+   * (`~/Library/Application Support/Cursor/User/settings.json`) directly from the mobile app.
+   */
+  updateCursorSettings(patch: {
+    cliConfig?: Record<string, any>;
+    desktopSettings?: Record<string, any>;
+  }): { ok: boolean; cliConfig: Record<string, any>; desktopSettings: Record<string, any> } {
+    const cliConfigPath = join(homedir(), '.cursor', 'cli-config.json');
+    let cliConfig: Record<string, any> = {};
+    if (existsSync(cliConfigPath)) {
+      try {
+        cliConfig = JSON.parse(readFileSync(cliConfigPath, 'utf8'));
+      } catch {
+        /* ignore */
+      }
+    }
+    if (patch.cliConfig && typeof patch.cliConfig === 'object') {
+      for (const [k, v] of Object.entries(patch.cliConfig)) {
+        if (v && typeof v === 'object' && !Array.isArray(v) && typeof cliConfig[k] === 'object') {
+          cliConfig[k] = { ...cliConfig[k], ...v };
+        } else {
+          cliConfig[k] = v;
+        }
+      }
+      mkdirSync(join(homedir(), '.cursor'), { recursive: true });
+      writeFileSync(cliConfigPath, JSON.stringify(cliConfig, null, 2) + '\n');
+    }
+
+    const desktopSettingsPath = join(
+      homedir(),
+      'Library',
+      'Application Support',
+      'Cursor',
+      'User',
+      'settings.json',
+    );
+    let desktopSettings: Record<string, any> = {};
+    if (existsSync(desktopSettingsPath)) {
+      try {
+        desktopSettings = JSON.parse(readFileSync(desktopSettingsPath, 'utf8'));
+      } catch {
+        /* ignore */
+      }
+    }
+    if (patch.desktopSettings && typeof patch.desktopSettings === 'object') {
+      desktopSettings = { ...desktopSettings, ...patch.desktopSettings };
+      mkdirSync(join(homedir(), 'Library', 'Application Support', 'Cursor', 'User'), {
+        recursive: true,
+      });
+      writeFileSync(desktopSettingsPath, JSON.stringify(desktopSettings, null, 4) + '\n');
+    }
+
+    return { ok: true, cliConfig, desktopSettings };
+  }
+
   async getGitDiff(cwd: string): Promise<{
     branch?: string;
     branches: string[];
@@ -1251,9 +1544,13 @@ return appName & "|||" & winTitle & "|||" & openStr
       action.type === 'rightclick' ||
       action.type === 'move'
     ) {
-      const bin = await this.ensureMacInputBinary();
       const nx = Math.max(0, Math.min(1, Number(action.x ?? 0.5)));
       const ny = Math.max(0, Math.min(1, Number(action.y ?? 0.5)));
+      const daemonOut = await this.macInput(`${action.type} ${nx} ${ny}`);
+      if (daemonOut) {
+        return { ok: true, detail: daemonOut };
+      }
+      const bin = await this.ensureMacInputBinary();
       const detail = await new Promise<string>((resolve) => {
         const p = spawn(bin, [action.type, String(nx), String(ny)], { env: RUN_ENV });
         let out = '';
@@ -1267,8 +1564,13 @@ return appName & "|||" & winTitle & "|||" & openStr
     if (action.type === 'scroll') {
       const dy = Math.round(Number(action.deltaY ?? -6));
       const dx = Math.round(Number(action.deltaX ?? 0));
-      // Pixel-unit scroll through the daemon (line-unit legacy binary path as fallback)
-      const r = await this.macInput(`scroll ${dy * 12} ${dx * 12}`);
+      const hasCoords = typeof action.x === 'number' && typeof action.y === 'number';
+      const nx = hasCoords ? Math.max(0, Math.min(1, Number(action.x))) : 0.5;
+      const ny = hasCoords ? Math.max(0, Math.min(1, Number(action.y))) : 0.5;
+      const cmd = hasCoords
+        ? `scrollat ${nx} ${ny} ${dy} ${dx}`
+        : `scroll ${dy} ${dx}`;
+      const r = await this.macInput(cmd);
       if (!r) {
         const bin = await this.ensureMacInputBinary();
         await new Promise<void>((resolve) => {

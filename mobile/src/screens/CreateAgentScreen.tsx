@@ -34,13 +34,27 @@ import { COLORS, FONTS, MODE_META } from '../theme';
 export default function CreateAgentScreen({ navigation, route }: any) {
   const kind: 'mac' | 'cloud' = route.params?.kind ?? 'mac';
   const isMac = kind === 'mac';
-  const { projects, setProjects, ideState, setIdeState, selectedMode } = useStore();
+  const {
+    projects,
+    setProjects,
+    ideState,
+    setIdeState,
+    selectedMode,
+    selectedCwd,
+    setSelectedCwd,
+  } = useStore();
 
-  const [cwd, setCwd] = useState(
+  const initialCwd =
+    route.params?.cwd ??
+    selectedCwd ??
     ideState?.activeWorkspace?.path ??
-      projects[0]?.path ??
-      '/Users/subramanyadattatrayag/Downloads/opptra-scrapers',
-  );
+    projects[0]?.path ??
+    '/Users/subramanyadattatrayag/Downloads/cuss';
+  const [cwd, setCwdState] = useState(initialCwd);
+  function setCwd(nextCwd: string) {
+    setCwdState(nextCwd);
+    setSelectedCwd(nextCwd);
+  }
   const [repoUrl, setRepoUrl] = useState('');
   const [autoCreatePR, setAutoCreatePR] = useState(true);
   const [watchOnMac, setWatchOnMac] = useState(true);
@@ -56,7 +70,7 @@ export default function CreateAgentScreen({ navigation, route }: any) {
         }
         if (ide.status === 'fulfilled' && ide.value) {
           setIdeState(ide.value);
-          if (ide.value.activeWorkspace?.path) {
+          if (!route.params?.cwd && !selectedCwd && ide.value.activeWorkspace?.path) {
             setCwd(ide.value.activeWorkspace.path);
           }
         }

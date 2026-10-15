@@ -18,6 +18,7 @@ import {
   View,
 } from 'react-native';
 import CursorComposer, { ComposerSubmitPayload } from '../components/CursorComposer';
+import CursorSettingsModal from '../components/CursorSettingsModal';
 import MacRemoteKeyboard, { MacInputAck } from '../components/MacRemoteKeyboard';
 import {
   FileViewerModal,
@@ -42,6 +43,7 @@ import {
   Plus,
   RefreshCw,
   Send,
+  SlidersHorizontal,
   Sparkles,
   SpringButton,
   Square,
@@ -225,112 +227,53 @@ function upsertSingleTurnThinking(
   return [...prev, newThinking];
 }
 
+type MirrorTouchMode = 'trackpad' | 'click' | 'doubleclick' | 'rightclick' | 'move' | 'pan';
+
 /**
- * Flicker-Free GPU Double-Buffered Mac Live Mirror Canvas + Touch-to-Control Surface
- * - Maintains two stacked <Image> buffers (Slot A & Slot B).
- * - Incoming base64 JPEG frames load into the hidden back-buffer and ONLY swap to front
- *   inside `onLoad` after the GPU finishes decoding — eliminating 100% of frame flicker!
- * - Touching anywhere on the 16:10 canvas maps (locationX, locationY) -> normalized (0..1, 0..1)
- *   and posts a native CoreGraphics click / double-click / right-click on the Mac!
+ * Flicker-Free GPU Double-Buffered Mac Live Mirror Canvas + Pinch-to-Zoom (1x–4x) + Live Pointer & Scroll Surface
+ * - Maintains two stacked <Image> buffers (Slot A & Slot B) for zero-flicker frame updates.
+ * - Uses a raw <View> + PanResponder (never <Pressable>) + parent ScrollView lock so touch drags are never stolen.
+ * - 2-finger pinch zooms (1.0x .. 4.0x) and pans around the Mac display.
+ * - 1-finger tap clicks at zoom-compensated (nx, ny); long-press right-clicks.
+ * - 1-finger drag in `trackpad` / `click` mode moves the Mac pointer to (nx, ny) and streams live Mac scrolling (`scrollat`)!
+ * - 1-finger drag in `move` mode moves the Mac cursor live; in `pan` mode pans the zoomed viewport.
  */
 function DoubleBufferedMirrorCanvas({
   imageBase64,
   aspectRatio = 16 / 10,
-  height = 240,
+  height = 285,
   isLive = true,
-  onTouchPoint,
-  trackpad = false,
-  onTrackpad,
+  touchMode = 'trackpad',
+  zoom = 1,
+  onZoomChange,
+  onAction,
+  onStatus,
+  onInteractingChange,
 }: {
   imageBase64: string;
   aspectRatio?: number;
   height?: number;
   isLive?: boolean;
-  onTouchPoint?: (nx: number, ny: number) => void;
-  /** P1 #6 trackpad mode: finger drag = relative cursor motion, tap = click, long-press = right-click, 2 fingers = scroll */
-  trackpad?: boolean;
-  onTrackpad?: (action: MacInputAction) => void;
+  touchMode?: MirrorTouchMode;
+  zoom?: number;
+  onZoomChange?: (nextZoom: number) => void;
+  onAction?: (action: MacInputAction) => void;
+  onStatus?: (status: string) => void;
+  onInteractingChange?: (interacting: boolean) => void;
 }) {
-  const trackpadRef = useRef({ trackpad, onTrackpad });
-  trackpadRef.current = { trackpad, onTrackpad };
-  const [ripple, setRipple] = useState<{ x: number; y: number; kind: 'tap' | 'right' } | null>(null);
-  const panResponder = useMemo(() => {
-    let startAt = 0;
-    let moved = 0;
-    let lastX = 0;
-    let lastY = 0;
-    let accX = 0;
-    let accY = 0;
-    let longPress: ReturnType<typeof setTimeout> | null = null;
-    let fired = false;
-    let twoFinger = false;
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    const SENS = 2.4;
-    const flush = () => {
-      flushTimer = null;
-      if (accX === 0 && accY === 0) return;
-      const dx = Math.round(accX);
-      const dy = Math.round(accY);
-      accX -= dx;
-      accY -= dy;
-      if (twoFinger) trackpadRef.current.onTrackpad?.({ type: 'scroll', deltaY: Math.round(dy / 6), deltaX: Math.round(dx / 6) });
-      else trackpadRef.current.onTrackpad?.({ type: 'move-rel', deltaX: dx, deltaY: dy });
-    };
-    return PanResponder.create({
-      onStartShouldSetPanResponder: () => trackpadRef.current.trackpad,
-      onMoveShouldSetPanResponder: () => trackpadRef.current.trackpad,
-      onPanResponderGrant: (e) => {
-        startAt = Date.now();
-        moved = 0;
-        fired = false;
-        twoFinger = e.nativeEvent.touches.length >= 2;
-        lastX = e.nativeEvent.pageX;
-        lastY = e.nativeEvent.pageY;
-        longPress = setTimeout(() => {
-          if (moved < 8 && !twoFinger) {
-            fired = true;
-            trackpadRef.current.onTrackpad?.({ type: 'rightclick-here' });
-            setRipple({ x: e.nativeEvent.locationX, y: e.nativeEvent.locationY, kind: 'right' });
-          }
-        }, 460);
-      },
-      onPanResponderMove: (e) => {
-        twoFinger = twoFinger || e.nativeEvent.touches.length >= 2;
-        const dx = e.nativeEvent.pageX - lastX;
-        const dy = e.nativeEvent.pageY - lastY;
-        lastX = e.nativeEvent.pageX;
-        lastY = e.nativeEvent.pageY;
-        moved += Math.abs(dx) + Math.abs(dy);
-        accX += dx * SENS;
-        accY += dy * SENS;
-        if (!flushTimer) flushTimer = setTimeout(flush, 16);
-      },
-      onPanResponderRelease: (e) => {
-        if (longPress) clearTimeout(longPress);
-        if (flushTimer) {
-          clearTimeout(flushTimer);
-          flush();
-        }
-        if (!fired && !twoFinger && moved < 8 && Date.now() - startAt < 280) {
-          trackpadRef.current.onTrackpad?.({ type: 'click-here' });
-          setRipple({ x: e.nativeEvent.locationX, y: e.nativeEvent.locationY, kind: 'tap' });
-        }
-      },
-      onPanResponderTerminate: () => {
-        if (longPress) clearTimeout(longPress);
-      },
-    });
-  }, []);
-  useEffect(() => {
-    if (!ripple) return;
-    const t = setTimeout(() => setRipple(null), 320);
-    return () => clearTimeout(t);
-  }, [ripple]);
   const [slotA, setSlotA] = useState<string>(imageBase64);
   const [slotB, setSlotB] = useState<string>(imageBase64);
   const [frontSlot, setFrontSlot] = useState<'A' | 'B'>('A');
-  const [canvasSize, setCanvasSize] = useState({ width: 320, height });
-  const [touchCrosshair, setTouchCrosshair] = useState<{ x: number; y: number } | null>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 340, height });
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [pointerPos, setPointerPos] = useState<{ x: number; y: number } | null>(null);
+  const [ripple, setRipple] = useState<{ x: number; y: number; kind: 'tap' | 'right' | 'scroll' } | null>(null);
+
+  useEffect(() => {
+    if (zoom <= 1.02) {
+      setPan({ x: 0, y: 0 });
+    }
+  }, [zoom]);
 
   useEffect(() => {
     if (!imageBase64) return;
@@ -341,118 +284,453 @@ function DoubleBufferedMirrorCanvas({
     }
   }, [imageBase64]);
 
+  useEffect(() => {
+    if (!ripple) return;
+    const t = setTimeout(() => setRipple(null), 320);
+    return () => clearTimeout(t);
+  }, [ripple]);
+
+  const stateRef = useRef({
+    canvasSize,
+    aspectRatio,
+    zoom,
+    pan,
+    touchMode,
+    onZoomChange,
+    onAction,
+    onStatus,
+    onInteractingChange,
+  });
+  stateRef.current = {
+    canvasSize,
+    aspectRatio,
+    zoom,
+    pan,
+    touchMode,
+    onZoomChange,
+    onAction,
+    onStatus,
+    onInteractingChange,
+  };
+
+  /** Convert container touch (locX, locY) -> zoom-compensated normalized Mac screen (nx, ny) in [0..1] */
+  function toNormalizedMacCoords(locX: number, locY: number): { nx: number; ny: number; ux: number; uy: number } {
+    const { canvasSize: cs, aspectRatio: ar, zoom: z, pan: p } = stateRef.current;
+    const w = Math.max(cs.width, 1);
+    const h = Math.max(cs.height, 1);
+    // Invert transform: translate(pan.x, pan.y) then scale(zoom) around center (w/2, h/2)
+    const ux = (locX - w / 2 - p.x) / Math.max(z, 1) + w / 2;
+    const uy = (locY - h / 2 - p.y) / Math.max(z, 1) + h / 2;
+
+    const containerRatio = w / h;
+    let renderW = w;
+    let renderH = h;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (containerRatio > ar) {
+      renderW = h * ar;
+      offsetX = (w - renderW) / 2;
+    } else {
+      renderH = w / ar;
+      offsetY = (h - renderH) / 2;
+    }
+    const nx = Math.max(0, Math.min(1, (ux - offsetX) / Math.max(renderW, 1)));
+    const ny = Math.max(0, Math.min(1, (uy - offsetY) / Math.max(renderH, 1)));
+    return { nx, ny, ux, uy };
+  }
+
+  const panResponder = useMemo(() => {
+    let startAt = 0;
+    let totalMoved = 0;
+    let startLocX = 0;
+    let startLocY = 0;
+    let lastPageX = 0;
+    let lastPageY = 0;
+    let scrollAccX = 0;
+    let scrollAccY = 0;
+    let startNx = 0.5;
+    let startNy = 0.5;
+    let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+    let longPressFired = false;
+    let isPinching = false;
+    let initialPinchDist = 1;
+    let initialZoom = 1;
+    let initialPan = { x: 0, y: 0 };
+    let initialMid = { x: 0, y: 0 };
+    let lastEmitAt = 0;
+
+    function getTouchDist(touches: readonly any[]) {
+      if (touches.length < 2) return 1;
+      const dx = touches[1].pageX - touches[0].pageX;
+      const dy = touches[1].pageY - touches[0].pageY;
+      return Math.max(1, Math.hypot(dx, dy));
+    }
+
+    function getTouchMid(touches: readonly any[]) {
+      if (touches.length < 2) return { x: 0, y: 0 };
+      return {
+        x: (touches[0].pageX + touches[1].pageX) / 2,
+        y: (touches[0].pageY + touches[1].pageY) / 2,
+      };
+    }
+
+    function clampPan(px: number, py: number, z: number) {
+      if (z <= 1.01) return { x: 0, y: 0 };
+      const { canvasSize: cs } = stateRef.current;
+      const maxX = ((cs.width * (z - 1)) / 2) * 1.15;
+      const maxY = ((cs.height * (z - 1)) / 2) * 1.15;
+      return {
+        x: Math.max(-maxX, Math.min(maxX, px)),
+        y: Math.max(-maxY, Math.min(maxY, py)),
+      };
+    }
+
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
+
+      onPanResponderGrant: (e) => {
+        stateRef.current.onInteractingChange?.(true);
+        const touches = e.nativeEvent.touches;
+        startAt = Date.now();
+        totalMoved = 0;
+        scrollAccX = 0;
+        scrollAccY = 0;
+        longPressFired = false;
+
+        if (touches.length >= 2) {
+          isPinching = true;
+          initialPinchDist = getTouchDist(touches);
+          initialZoom = stateRef.current.zoom;
+          initialPan = { ...stateRef.current.pan };
+          initialMid = getTouchMid(touches);
+          return;
+        }
+
+        isPinching = false;
+        startLocX = e.nativeEvent.locationX;
+        startLocY = e.nativeEvent.locationY;
+        lastPageX = e.nativeEvent.pageX;
+        lastPageY = e.nativeEvent.pageY;
+        initialPan = { ...stateRef.current.pan };
+
+        const mapped = toNormalizedMacCoords(startLocX, startLocY);
+        startNx = mapped.nx;
+        startNy = mapped.ny;
+        setPointerPos({ x: mapped.ux, y: mapped.uy });
+
+        if (longPressTimer) clearTimeout(longPressTimer);
+        longPressTimer = setTimeout(() => {
+          if (!isPinching && totalMoved < 10 && stateRef.current.touchMode !== 'pan') {
+            longPressFired = true;
+            stateRef.current.onAction?.({ type: 'rightclick', x: startNx, y: startNy });
+            stateRef.current.onStatus?.(
+              `RIGHT-CLICK @ (${Math.round(startNx * 100)}%, ${Math.round(startNy * 100)}%)`,
+            );
+            setRipple({ x: mapped.ux, y: mapped.uy, kind: 'right' });
+          }
+        }, 440);
+      },
+
+      onPanResponderMove: (e) => {
+        const touches = e.nativeEvent.touches;
+
+        // 2-Finger Pinch-to-Zoom & Pan
+        if (touches.length >= 2) {
+          if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+          }
+          if (!isPinching) {
+            isPinching = true;
+            initialPinchDist = getTouchDist(touches);
+            initialZoom = stateRef.current.zoom;
+            initialPan = { ...stateRef.current.pan };
+            initialMid = getTouchMid(touches);
+            return;
+          }
+          const dist = getTouchDist(touches);
+          const scale = dist / Math.max(initialPinchDist, 1);
+          const nextZoom = Math.max(1, Math.min(4, Number((initialZoom * scale).toFixed(2))));
+          const mid = getTouchMid(touches);
+          const nextPan = clampPan(
+            initialPan.x + (mid.x - initialMid.x),
+            initialPan.y + (mid.y - initialMid.y),
+            nextZoom,
+          );
+          setPan(nextPan);
+          stateRef.current.onZoomChange?.(nextZoom);
+          stateRef.current.onStatus?.(`ZOOM ${nextZoom.toFixed(1)}x`);
+          return;
+        }
+
+        if (isPinching) return;
+
+        const dx = e.nativeEvent.pageX - lastPageX;
+        const dy = e.nativeEvent.pageY - lastPageY;
+        lastPageX = e.nativeEvent.pageX;
+        lastPageY = e.nativeEvent.pageY;
+        totalMoved += Math.abs(dx) + Math.abs(dy);
+
+        if (totalMoved >= 10 && longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+
+        const mode = stateRef.current.touchMode;
+
+        // Mode A: Pan the zoomed-in mirror view with 1 finger
+        if (mode === 'pan') {
+          const z = stateRef.current.zoom;
+          setPan((prev) => clampPan(prev.x + dx, prev.y + dy, z));
+          return;
+        }
+
+        // Mode B: Live Cursor Move along finger path
+        if (mode === 'move') {
+          const now = Date.now();
+          if (now - lastEmitAt >= 28) {
+            lastEmitAt = now;
+            const curLocX = startLocX + (e.nativeEvent.pageX - (lastPageX - dx));
+            const curLocY = startLocY + (e.nativeEvent.pageY - (lastPageY - dy));
+            const mapped = toNormalizedMacCoords(e.nativeEvent.locationX || curLocX, e.nativeEvent.locationY || curLocY);
+            setPointerPos({ x: mapped.ux, y: mapped.uy });
+            stateRef.current.onAction?.({ type: 'move', x: mapped.nx, y: mapped.ny });
+            stateRef.current.onStatus?.(
+              `CURSOR @ (${Math.round(mapped.nx * 100)}%, ${Math.round(mapped.ny * 100)}%)`,
+            );
+          }
+          return;
+        }
+
+        // Mode C (Default `trackpad` / `click` / etc.): Dragging 1 finger scrolls the Mac window under the pointer live!
+        scrollAccX += dx;
+        scrollAccY += dy;
+        const now = Date.now();
+        if (totalMoved >= 8 && now - lastEmitAt >= 28 && (Math.abs(scrollAccY) >= 5 || Math.abs(scrollAccX) >= 5)) {
+          lastEmitAt = now;
+          // Dragging finger UP (scrollAccY < 0) scrolls down the page (wheel deltaY < 0); dragging DOWN scrolls up.
+          const linesY = Math.max(-18, Math.min(18, Math.round(scrollAccY / 5)));
+          const linesX = Math.max(-18, Math.min(18, Math.round(scrollAccX / 6)));
+          scrollAccY = 0;
+          scrollAccX = 0;
+          if (linesY !== 0 || linesX !== 0) {
+            stateRef.current.onAction?.({
+              type: 'scroll',
+              x: startNx,
+              y: startNy,
+              deltaY: linesY,
+              deltaX: linesX,
+            });
+            stateRef.current.onStatus?.(
+              `LIVE SCROLL @ (${Math.round(startNx * 100)}%, ${Math.round(startNy * 100)}%) · ΔY ${linesY > 0 ? `+${linesY}` : linesY}`,
+            );
+          }
+        }
+      },
+
+      onPanResponderRelease: () => {
+        stateRef.current.onInteractingChange?.(false);
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+        if (isPinching || longPressFired) {
+          isPinching = false;
+          return;
+        }
+
+        const mode = stateRef.current.touchMode;
+        if (mode === 'pan') return;
+
+        // Short tap (< 10px movement) -> Click / Double-Click / Right-Click / Move at (startNx, startNy)
+        if (totalMoved < 10 && Date.now() - startAt < 420) {
+          const actionType =
+            mode === 'doubleclick'
+              ? 'doubleclick'
+              : mode === 'rightclick'
+              ? 'rightclick'
+              : mode === 'move'
+              ? 'move'
+              : 'click';
+          stateRef.current.onAction?.({ type: actionType, x: startNx, y: startNy });
+          stateRef.current.onStatus?.(
+            `${actionType.toUpperCase()} @ (${Math.round(startNx * 100)}%, ${Math.round(startNy * 100)}%)`,
+          );
+          const mapped = toNormalizedMacCoords(startLocX, startLocY);
+          setRipple({
+            x: mapped.ux,
+            y: mapped.uy,
+            kind: actionType === 'rightclick' ? 'right' : 'tap',
+          });
+        }
+      },
+
+      onPanResponderTerminate: () => {
+        stateRef.current.onInteractingChange?.(false);
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+        isPinching = false;
+      },
+    });
+  }, []);
+
   return (
-    <Pressable
+    <View
       onLayout={(e) => {
         const { width: w, height: h } = e.nativeEvent.layout;
         if (w > 0 && h > 0) setCanvasSize({ width: w, height: h });
       }}
-      {...(trackpad ? panResponder.panHandlers : {})}
-      onPress={(e) => {
-        if (!onTouchPoint || trackpad) return;
-        const { locationX, locationY } = e.nativeEvent;
-        const w = Math.max(canvasSize.width, 1);
-        const h = Math.max(canvasSize.height, 1);
-        // Compute actual rendered 16:10 image box inside resizeMode="contain"
-        const containerRatio = w / h;
-        let renderW = w;
-        let renderH = h;
-        let offsetX = 0;
-        let offsetY = 0;
-        if (containerRatio > aspectRatio) {
-          renderW = h * aspectRatio;
-          offsetX = (w - renderW) / 2;
-        } else {
-          renderH = w / aspectRatio;
-          offsetY = (h - renderH) / 2;
-        }
-        const nx = Math.max(0, Math.min(1, (locationX - offsetX) / Math.max(renderW, 1)));
-        const ny = Math.max(0, Math.min(1, (locationY - offsetY) / Math.max(renderH, 1)));
-        setTouchCrosshair({ x: locationX, y: locationY });
-        onTouchPoint(nx, ny);
-      }}
+      {...panResponder.panHandlers}
       style={{
         width: '100%',
         height,
         borderRadius: 12,
         borderWidth: 1.5,
-        borderColor: trackpad ? COLORS.cyan : isLive ? COLORS.lime : COLORS.borderHi,
+        borderColor: touchMode === 'trackpad' ? COLORS.cyan : isLive ? COLORS.lime : COLORS.borderHi,
         backgroundColor: '#05050A',
         overflow: 'hidden',
       }}
     >
-      {ripple ? (
-        <View
-          key={`${ripple.x}-${ripple.y}-${ripple.kind}`}
-          pointerEvents="none"
-          style={{
-            position: 'absolute',
-            left: ripple.x - 18,
-            top: ripple.y - 18,
-            width: 36,
-            height: 36,
-            borderRadius: 18,
-            borderWidth: 2,
-            borderColor: ripple.kind === 'right' ? COLORS.magenta : COLORS.cyan,
-            backgroundColor: ripple.kind === 'right' ? COLORS.magentaDim : COLORS.cyanDim,
-            zIndex: 11,
+      <View
+        pointerEvents="none"
+        style={[
+          StyleSheet.absoluteFill,
+          {
+            transform: [
+              { translateX: pan.x },
+              { translateY: pan.y },
+              { scale: zoom },
+            ],
+          },
+        ]}
+      >
+        <Image
+          source={{ uri: slotA }}
+          fadeDuration={0}
+          onLoad={() => {
+            if (slotA === imageBase64 && frontSlot !== 'A') setFrontSlot('A');
           }}
+          style={[
+            StyleSheet.absoluteFill,
+            { opacity: frontSlot === 'A' ? 1 : 0, zIndex: frontSlot === 'A' ? 2 : 1 },
+          ]}
+          resizeMode="contain"
         />
-      ) : null}
-      <Image
-        source={{ uri: slotA }}
-        fadeDuration={0}
-        onLoad={() => {
-          if (slotA === imageBase64 && frontSlot !== 'A') setFrontSlot('A');
-        }}
-        style={[
-          StyleSheet.absoluteFill,
-          { opacity: frontSlot === 'A' ? 1 : 0, zIndex: frontSlot === 'A' ? 2 : 1 },
-        ]}
-        resizeMode="contain"
-      />
-      <Image
-        source={{ uri: slotB }}
-        fadeDuration={0}
-        onLoad={() => {
-          if (slotB === imageBase64 && frontSlot !== 'B') setFrontSlot('B');
-        }}
-        style={[
-          StyleSheet.absoluteFill,
-          { opacity: frontSlot === 'B' ? 1 : 0, zIndex: frontSlot === 'B' ? 2 : 1 },
-        ]}
-        resizeMode="contain"
-      />
-
-      {touchCrosshair ? (
-        <View
-          pointerEvents="none"
-          style={{
-            position: 'absolute',
-            left: touchCrosshair.x - 14,
-            top: touchCrosshair.y - 14,
-            width: 28,
-            height: 28,
-            borderRadius: 14,
-            borderWidth: 2,
-            borderColor: COLORS.lime,
-            backgroundColor: 'rgba(212, 255, 0, 0.22)',
-            zIndex: 10,
-            alignItems: 'center',
-            justifyContent: 'center',
+        <Image
+          source={{ uri: slotB }}
+          fadeDuration={0}
+          onLoad={() => {
+            if (slotB === imageBase64 && frontSlot !== 'B') setFrontSlot('B');
           }}
-        >
+          style={[
+            StyleSheet.absoluteFill,
+            { opacity: frontSlot === 'B' ? 1 : 0, zIndex: frontSlot === 'B' ? 2 : 1 },
+          ]}
+          resizeMode="contain"
+        />
+
+        {ripple ? (
           <View
+            key={`${ripple.x}-${ripple.y}-${ripple.kind}`}
+            pointerEvents="none"
             style={{
-              width: 6,
-              height: 6,
-              borderRadius: 3,
-              backgroundColor: COLORS.magenta,
+              position: 'absolute',
+              left: ripple.x - 18,
+              top: ripple.y - 18,
+              width: 36,
+              height: 36,
+              borderRadius: 18,
+              borderWidth: 2,
+              borderColor: ripple.kind === 'right' ? COLORS.magenta : COLORS.cyan,
+              backgroundColor: ripple.kind === 'right' ? COLORS.magentaDim : COLORS.cyanDim,
+              zIndex: 11,
             }}
           />
+        ) : null}
+
+        {pointerPos ? (
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              left: pointerPos.x - 12,
+              top: pointerPos.y - 12,
+              width: 24,
+              height: 24,
+              borderRadius: 12,
+              borderWidth: 2,
+              borderColor: COLORS.lime,
+              backgroundColor: 'rgba(212, 255, 0, 0.22)',
+              zIndex: 10,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <View
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 3,
+                backgroundColor: COLORS.magenta,
+              }}
+            />
+          </View>
+        ) : null}
+      </View>
+
+      {/* Top-Left Zoom & Mode HUD Overlay */}
+      <View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          top: 8,
+          left: 8,
+          flexDirection: 'row',
+          gap: 6,
+          zIndex: 20,
+        }}
+      >
+        <View
+          style={{
+            backgroundColor: 'rgba(7, 7, 12, 0.82)',
+            borderWidth: 1,
+            borderColor: COLORS.cyan,
+            borderRadius: 6,
+            paddingHorizontal: 7,
+            paddingVertical: 3,
+          }}
+        >
+          <Text style={{ fontFamily: FONTS.monoBold, fontSize: 8.5, color: COLORS.cyan }}>
+            {touchMode === 'trackpad'
+              ? 'TRACKPAD: TAP=CLICK · DRAG=SCROLL · PINCH=ZOOM'
+              : `MODE: ${touchMode.toUpperCase()} · PINCH=ZOOM`}
+          </Text>
         </View>
-      ) : null}
-    </Pressable>
+        {zoom > 1.01 ? (
+          <View
+            style={{
+              backgroundColor: 'rgba(7, 7, 12, 0.85)',
+              borderWidth: 1,
+              borderColor: COLORS.lime,
+              borderRadius: 6,
+              paddingHorizontal: 6,
+              paddingVertical: 3,
+            }}
+          >
+            <Text style={{ fontFamily: FONTS.monoBold, fontSize: 8.5, color: COLORS.lime }}>
+              {zoom.toFixed(1)}x
+            </Text>
+          </View>
+        ) : null}
+      </View>
+    </View>
   );
 }
 
@@ -534,7 +812,10 @@ export default function AgentDetailScreen({ route, navigation }: any) {
   const [peekLoading, setPeekLoading] = useState(false);
   const [liveMirrorStreaming, setLiveMirrorStreaming] = useState(true);
   const [mirrorFullScreen, setMirrorFullScreen] = useState(false);
-  const [mirrorTouchMode, setMirrorTouchMode] = useState<'click' | 'doubleclick' | 'rightclick' | 'move' | 'trackpad'>('click');
+  const [mirrorTouchMode, setMirrorTouchMode] = useState<MirrorTouchMode>('trackpad');
+  const [mirrorZoom, setMirrorZoom] = useState<number>(1);
+  const [mirrorInteracting, setMirrorInteracting] = useState<boolean>(false);
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [showAllMacApps, setShowAllMacApps] = useState(false);
   const [macFocus, setMacFocus] = useState<MacFocusInfo | null>(null);
   const [lastInputAck, setLastInputAck] = useState<MacInputAck | null>(null);
@@ -1233,6 +1514,16 @@ export default function AgentDetailScreen({ route, navigation }: any) {
             <SpringButton style={styles.peekBtn} onPress={handleOpenMacPeek} tiltOnPress>
               <Laptop size={12} color={COLORS.amber} />
               <Text style={styles.peekBtnText}>LIVE MIRROR</Text>
+            </SpringButton>
+          ) : null}
+          {isMac ? (
+            <SpringButton
+              style={styles.macTermBtn}
+              onPress={() => setSettingsOpen(true)}
+              tiltOnPress
+            >
+              <SlidersHorizontal size={12} color={COLORS.cyan} />
+              <Text style={styles.macTermBtnText}>SETTINGS</Text>
             </SpringButton>
           ) : null}
           {isRunning ? (
@@ -2053,8 +2344,11 @@ export default function AgentDetailScreen({ route, navigation }: any) {
               </View>
             ) : null}
 
-            <ScrollView contentContainerStyle={{ gap: 10, paddingBottom: 24 }}>
-              {/* Flicker-Free Double-Buffered Live Mirror + Touch-to-Control Canvas */}
+            <ScrollView
+              scrollEnabled={!mirrorInteracting}
+              contentContainerStyle={{ gap: 10, paddingBottom: 24 }}
+            >
+              {/* Flicker-Free Double-Buffered Live Mirror + Pinch-to-Zoom + Live Scroll & Pointer Canvas */}
               {peekLoading && !peekData?.imageBase64 ? (
                 <CussSmallArtLoader
                   variant="card"
@@ -2067,33 +2361,81 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                   <DoubleBufferedMirrorCanvas
                     imageBase64={peekData.imageBase64}
                     aspectRatio={(peekData.screenWidth ?? 1440) / (peekData.screenHeight ?? 900)}
-                    height={mirrorFullScreen ? 360 : 235}
+                    height={mirrorFullScreen ? 440 : 285}
                     isLive={liveMirrorStreaming}
-                    trackpad={mirrorTouchMode === 'trackpad'}
-                    onTrackpad={(action) => {
-                      sendMacInput(action);
-                      if (action.type === 'click-here') setLastTouchStatus('TRACKPAD CLICK');
-                      else if (action.type === 'rightclick-here') setLastTouchStatus('TRACKPAD RIGHT-CLICK');
-                    }}
-                    onTouchPoint={(nx, ny) => {
-                      if (mirrorTouchMode === 'trackpad') return;
-                      setLastTouchStatus(
-                        `${mirrorTouchMode.toUpperCase()} @ (${Math.round(nx * 100)}%, ${Math.round(ny * 100)}%)`,
-                      );
-                      sendMacInput({ type: mirrorTouchMode, x: nx, y: ny });
-                    }}
+                    touchMode={mirrorTouchMode}
+                    zoom={mirrorZoom}
+                    onZoomChange={setMirrorZoom}
+                    onInteractingChange={setMirrorInteracting}
+                    onAction={(action) => sendMacInput(action)}
+                    onStatus={setLastTouchStatus}
                   />
 
-                  {/* Touch Mode & Scroll Control Bar */}
+                  {/* Pinch-to-Zoom & Viewport Pan Control Bar */}
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                      <Text style={{ fontFamily: FONTS.monoBold, fontSize: 9.5, color: COLORS.muted }}>
+                        ZOOM:
+                      </Text>
+                      {[1, 1.5, 2, 3, 4].map((z) => {
+                        const active = Math.abs(mirrorZoom - z) < 0.12;
+                        return (
+                          <SpringButton
+                            key={z}
+                            style={[
+                              styles.branchChip,
+                              active && { backgroundColor: COLORS.cyan, borderColor: COLORS.cyan },
+                            ]}
+                            onPress={() => setMirrorZoom(z)}
+                          >
+                            <Text
+                              style={[
+                                styles.branchChipText,
+                                { fontSize: 9.5 },
+                                active && { color: COLORS.bg, fontFamily: FONTS.monoBold },
+                              ]}
+                            >
+                              {z}x
+                            </Text>
+                          </SpringButton>
+                        );
+                      })}
+                      {mirrorZoom > 1.05 ? (
+                        <SpringButton
+                          style={[
+                            styles.branchChip,
+                            mirrorTouchMode === 'pan' && {
+                              backgroundColor: COLORS.amber,
+                              borderColor: COLORS.amber,
+                            },
+                          ]}
+                          onPress={() =>
+                            setMirrorTouchMode((m) => (m === 'pan' ? 'trackpad' : 'pan'))
+                          }
+                        >
+                          <Text
+                            style={[
+                              styles.branchChipText,
+                              { fontSize: 9.5, color: mirrorTouchMode === 'pan' ? COLORS.bg : COLORS.amber },
+                            ]}
+                          >
+                            {mirrorTouchMode === 'pan' ? 'PANNING VIEW' : 'PAN ZOOMED VIEW'}
+                          </Text>
+                        </SpringButton>
+                      ) : null}
+                    </View>
+                  </ScrollView>
+
+                  {/* Touch Mode & Live Scroll Control Bar */}
                   <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                     <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
                       {(
                         [
-                          { id: 'trackpad', label: 'TRACKPAD' },
-                          { id: 'click', label: 'TAP: CLICK' },
-                          { id: 'doubleclick', label: 'TAP: DOUBLE' },
-                          { id: 'rightclick', label: 'TAP: RIGHT' },
-                          { id: 'move', label: 'TAP: MOVE' },
+                          { id: 'trackpad', label: 'TRACKPAD (TAP + DRAG SCROLL)' },
+                          { id: 'click', label: 'CLICK' },
+                          { id: 'doubleclick', label: 'DOUBLE CLICK' },
+                          { id: 'rightclick', label: 'RIGHT CLICK' },
+                          { id: 'move', label: 'MOVE CURSOR' },
                         ] as const
                       ).map((tm) => {
                         const active = mirrorTouchMode === tm.id;
@@ -2120,7 +2462,7 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                       })}
                       <SpringButton
                         style={styles.branchChip}
-                        onPress={() => void localMacAction({ type: 'scroll', deltaY: 8 })}
+                        onPress={() => sendMacInput({ type: 'scroll', deltaY: 8 })}
                       >
                         <Text style={[styles.branchChipText, { fontSize: 9.5, color: COLORS.cyan }]}>
                           SCROLL ↑
@@ -2128,7 +2470,7 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                       </SpringButton>
                       <SpringButton
                         style={styles.branchChip}
-                        onPress={() => void localMacAction({ type: 'scroll', deltaY: -8 })}
+                        onPress={() => sendMacInput({ type: 'scroll', deltaY: -8 })}
                       >
                         <Text style={[styles.branchChipText, { fontSize: 9.5, color: COLORS.cyan }]}>
                           SCROLL ↓
@@ -2267,6 +2609,12 @@ export default function AgentDetailScreen({ route, navigation }: any) {
           </View>
         </View>
       </Modal>
+
+      {/* MODAL: Cursor Settings & Plan Usage */}
+      <CursorSettingsModal
+        visible={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </KeyboardAvoidingView>
   );
 }
