@@ -7,6 +7,7 @@
 **A mobile engineering workstation for Android and iOS that drives your Mac's local Cursor CLI and IDE over a low-latency local bridge — with zero API keys, zero terminal setup, and full Cursor parity.**
 
 [![Release](https://img.shields.io/badge/RELEASE-v0.5.2-D4FF00?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases)
+[![Launch Video](https://img.shields.io/badge/LAUNCH_VIDEO-cuss--launch.mp4-FFB703?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases/download/v0.5.2/cuss-launch.mp4)
 [![Mac Installer](https://img.shields.io/badge/MACOS_INSTALLER-cuss.dmg-00F0FF?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases)
 [![Android APK](https://img.shields.io/badge/ANDROID_APP-cuss.apk-FF2A85?style=for-the-badge&labelColor=07070C)](https://github.com/negativenagesh/cuss/releases)
 [![Tests](https://img.shields.io/badge/VITEST-31%2F31_PASSING-10F59B?style=for-the-badge&labelColor=07070C)](#verification-and-test-suite)
@@ -27,7 +28,9 @@ Modern AI-assisted software development happens inside **Cursor** on a developer
 
 ---
 
-## Visual Walkthrough: macOS Installer and Menu Bar App
+## Visual Walkthrough: macOS Installer, Menu Bar App, and Mobile Control Deck
+
+> **Launch Video (`cuss-launch.mp4`, 57s, 1080p with ElevenLabs Voiceover)**: [**Download / Watch `cuss-launch.mp4` on GitHub Releases**](https://github.com/negativenagesh/cuss/releases/download/v0.5.2/cuss-launch.mp4)
 
 ### 1. Self-Contained macOS Installer (`cuss.dmg` -> `Install CUSS.app`)
 
@@ -52,6 +55,50 @@ Modern AI-assisted software development happens inside **Cursor** on a developer
   - Click **CUSS** in the top macOS menu bar at any time.
   - Click **Pair Phone — Show QR Code & Control HUD** to display the scannable pairing QR code (`missioncontrol://pair?url=...&token=...`) and live network telemetry.
   - Use **Copy Mac Bridge URL**, **Copy Pairing Token**, **Sync Cursor Desktop Login Now**, or **Restart Background Services** with one click.
+
+---
+
+### 3. Sessions Dashboard and Mac Working Directory Picker (`CUSS // SESSIONS`)
+
+<p align="center">
+  <img src="./assets/screenshots/mobile-sessions-and-dirs.png" alt="CUSS Sessions Dashboard and Mac Working Directory Picker" width="100%" />
+</p>
+
+- **Left**: The **Sessions Dashboard (`CUSS // SESSIONS`)** renders a 60fps pure SVG + Reanimated orbital reactor field where each orbiting satellite represents an active or recent Cursor session on your Mac, followed by the interactive Working Directory bar (`CHANGE DIR`, `ALL DIRS / THIS DIR` filter, `SYNC`) and persistent session cards.
+- **Right**: Tapping **CHANGE DIR** (or **SELECT DIR** on the Landing screen) opens the **Mac Working Directory Picker**, listing all discovered Git repositories, branches, and worktrees alongside a full Mac folder browser (`GET /api/local/browse-dirs`).
+
+---
+
+### 4. Cursor Settings, Live Plan Usage Meters, and CLI / Editor Switches
+
+<p align="center">
+  <img src="./assets/screenshots/mobile-settings-and-usage.png" alt="CUSS Cursor Settings and Plan Usage" width="100%" />
+</p>
+
+- **Left**: The **PLAN & USAGE** tab queries Cursor's `aiserver.v1.DashboardService/GetPlanInfo`, `GetCurrentPeriodUsage`, and `GetHardLimit` endpoints to display your subscription tier (`ULTRA · $200/mo`), three live usage bars (**Total Included Usage %**, **Auto / Composer 2.5 / Grok 4.7 Bucket %**, and **Named Frontier API Usage %**), USD compute spend breakdown (**Included Credit**, **Provider Bonus**, **Total Value Used**, **On-Demand Hard Cap**), and all included Auto-bucket models.
+- **Right**: The **GENERAL & DIR** tab provides live switches that read and write `~/.cursor/cli-config.json` (`Max Mode`, `Disable Sandbox`, `Auto-Accept Web Search`, `Attribute Git Commits`, `Attribute PRs`, `Notifications`, `Vim Mode`) and Cursor Desktop's `settings.json` (`Git Autofetch`, `Terminal Inline Images`, `Auto-Detect OS Color Scheme`, `Format On Save`).
+
+---
+
+### 5. Model Matrix (`Grok 4.7`, `Composer 2.5`, `Auto`) and Live Agent Streaming
+
+<p align="center">
+  <img src="./assets/screenshots/mobile-models-and-agent.png" alt="CUSS Model Matrix and Agent Streaming" width="100%" />
+</p>
+
+- **Left**: Opening the **Model Matrix** lets you select any frontier model family (`Auto`, `Grok 4.7`, `Grok 4.6`, `Grok 4.5`, `Composer 2.5`, `Claude Opus`, `GPT-5.4`) and configure **Reasoning Effort** (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`), **Context Window** (`256K`, `500K`, `1M`), and **Fast Turbo** mode.
+- **Right**: Spawning or prompting an agent streams real-time NDJSON events (`thinking`, `tool_call`, `assistant`) over WebSocket with direct shortcuts to **GIT**, **SHELL / GCP**, **LIVE MIRROR**, and **SETTINGS**.
+
+---
+
+### 6. Pinch-to-Zoom Mac Live Mirror, Pointer Trackpad Scroll, and 5ms Live Remote Keyboard
+
+<p align="center">
+  <img src="./assets/screenshots/mobile-mirror-and-keyboard.png" alt="CUSS Pinch-to-Zoom Live Mirror and Live Remote Keyboard" width="100%" />
+</p>
+
+- **Left**: Inside **MAC LIVE MIRROR**, pinch with two fingers (or tap the `1x / 1.5x / 2x / 3x / 4x` pills) to zoom into any part of your Mac display. Dragging one finger in **TRACKPAD (TAP + DRAG SCROLL)** mode moves the Mac pointer to that window and live-scrolls the Mac window under your finger via native `CGEvent` wheel injection (`scrollat`).
+- **Right**: Tapping any input field on the mirrored Mac screen (such as Google Chrome's address bar or Cursor's composer) activates the **Focused-Field Accessibility Echo** (`AXFocusedUIElement`) with a live blinking caret. Every keystroke typed on your phone streams into the active Mac window in ~5ms over WebSocket (`mirror:input`), and pressing **Enter** triggers a native `Return` key on the Mac.
 
 ---
 
