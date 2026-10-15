@@ -302,7 +302,12 @@ interface DeviceStateSnapshot {
   accountEmail?: string | null;
   cursorSignedIn?: boolean;
   deletedChatIds?: string[];
+  macSnippets?: string[];
+  macEnterPolicies?: Record<string, MacEnterPolicy>;
 }
+
+/** How the phone's Enter key is delivered to a given Mac app in LIVE KEYBOARD mode. */
+export type MacEnterPolicy = 'auto' | 'enter' | 'cmd+enter' | 'shift+enter';
 
 function getDeviceStateFile(): ExpoFile {
   return new ExpoFile(Paths.document, 'cuss-device-state-v1.json');
@@ -396,6 +401,11 @@ interface State {
   selectedFast: boolean;
   selectedThinking: boolean;
   hydrated: boolean;
+  macSnippets: string[];
+  macEnterPolicies: Record<string, MacEnterPolicy>;
+  addMacSnippet: (text: string) => void;
+  removeMacSnippet: (text: string) => void;
+  setMacEnterPolicy: (app: string, policy: MacEnterPolicy) => void;
   setPairing: (url: string, token: string) => Promise<void>;
   clearPairing: () => Promise<void>;
   setCursorSignedIn: (signedIn: boolean, email?: string | null) => Promise<void>;
@@ -438,6 +448,25 @@ export const useStore = create<State>((set, get) => ({
   selectedFast: false,
   selectedThinking: true,
   hydrated: false,
+  macSnippets: [],
+  macEnterPolicies: {},
+  addMacSnippet: (text) => {
+    const t = String(text ?? '').trim();
+    if (!t) return;
+    const next = [t, ...get().macSnippets.filter((x) => x !== t)].slice(0, 24);
+    writeDeviceStateSnapshot({ macSnippets: next });
+    set({ macSnippets: next });
+  },
+  removeMacSnippet: (text) => {
+    const next = get().macSnippets.filter((x) => x !== text);
+    writeDeviceStateSnapshot({ macSnippets: next });
+    set({ macSnippets: next });
+  },
+  setMacEnterPolicy: (app, policy) => {
+    const next = { ...get().macEnterPolicies, [app.toLowerCase()]: policy };
+    writeDeviceStateSnapshot({ macEnterPolicies: next });
+    set({ macEnterPolicies: next });
+  },
   async setPairing(bridgeUrl, token) {
     await SecureStore.setItemAsync('bridgeUrl', bridgeUrl);
     await SecureStore.setItemAsync('pairingToken', token);
@@ -500,6 +529,8 @@ export const useStore = create<State>((set, get) => ({
       accountEmail: snap.accountEmail ?? null,
       cursorSignedIn,
       deletedChatIds: Array.isArray(snap.deletedChatIds) ? snap.deletedChatIds : [],
+      macSnippets: Array.isArray(snap.macSnippets) ? snap.macSnippets : [],
+      macEnterPolicies: snap.macEnterPolicies && typeof snap.macEnterPolicies === 'object' ? snap.macEnterPolicies : {},
       hydrated: true,
     });
   },

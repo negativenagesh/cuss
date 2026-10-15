@@ -164,11 +164,19 @@ export class LocalAgentsController {
         | 'move'
         | 'scroll'
         | 'type-text'
-        | 'backspace';
+        | 'backspace'
+        | 'move-rel'
+        | 'mouse-down'
+        | 'mouse-up'
+        | 'click-here'
+        | 'rightclick-here'
+        | 'paste-text'
+        | 'clipboard-set';
       target?: string;
       x?: number;
       y?: number;
       deltaY?: number;
+      deltaX?: number;
       text?: string;
       count?: number;
     },
@@ -177,6 +185,18 @@ export class LocalAgentsController {
       throw new HttpException({ code: 'validation_error', message: 'type is required' }, 400);
     }
     return await this.local.performMacAction(body as any);
+  }
+
+  /** Accessibility snapshot of the focused Mac field (role/value/secure/multiline) for focused-field echo. */
+  @Get('mac-focus')
+  async macFocus() {
+    return await this.local.getMacFocus();
+  }
+
+  /** Read the Mac clipboard (pbpaste) so the phone can pull text copied on the Mac. */
+  @Get('mac-clipboard')
+  async macClipboard() {
+    return await this.local.getMacClipboard();
   }
 
   @Post('transcribe')

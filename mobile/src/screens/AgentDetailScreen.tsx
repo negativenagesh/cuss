@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -8,6 +8,7 @@ import {
   KeyboardAvoidingView,
   Linking,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -16,7 +17,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import Animated, { Easing, FadeOut, ZoomIn } from 'react-native-reanimated';
 import CursorComposer, { ComposerSubmitPayload } from '../components/CursorComposer';
+import MacRemoteKeyboard, { MacInputAck } from '../components/MacRemoteKeyboard';
 import {
   FileViewerModal,
   looksLikeFilePath,
@@ -35,7 +38,6 @@ import {
   FolderGit2,
   GitBranch,
   Globe,
-  Keyboard as KeyboardIcon,
   Laptop,
   ModeVectorIcon,
   Plus,
@@ -64,12 +66,15 @@ import {
   localGitDiff,
   localList,
   localMacAction,
+  localMacFocus,
   localMacScreen,
   localOpenUrlOnMac,
   localPrompt,
   localRename,
   localShowOnMac,
   localStop,
+  MacFocusInfo,
+  MacInputAction,
   MacMirrorFrame,
   sendPrompt,
 } from '../api/client';
@@ -235,13 +240,93 @@ function DoubleBufferedMirrorCanvas({
   height = 240,
   isLive = true,
   onTouchPoint,
+  trackpad = false,
+  onTrackpad,
 }: {
   imageBase64: string;
   aspectRatio?: number;
   height?: number;
   isLive?: boolean;
   onTouchPoint?: (nx: number, ny: number) => void;
+  /** P1 #6 trackpad mode: finger drag = relative cursor motion, tap = click, long-press = right-click, 2 fingers = scroll */
+  trackpad?: boolean;
+  onTrackpad?: (action: MacInputAction) => void;
 }) {
+  const trackpadRef = useRef({ trackpad, onTrackpad });
+  trackpadRef.current = { trackpad, onTrackpad };
+  const [ripple, setRipple] = useState<{ x: number; y: number; kind: 'tap' | 'right' } | null>(null);
+  const panResponder = useMemo(() => {
+    let startAt = 0;
+    let moved = 0;
+    let lastX = 0;
+    let lastY = 0;
+    let accX = 0;
+    let accY = 0;
+    let longPress: ReturnType<typeof setTimeout> | null = null;
+    let fired = false;
+    let twoFinger = false;
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const SENS = 2.4;
+    const flush = () => {
+      flushTimer = null;
+      if (accX === 0 && accY === 0) return;
+      const dx = Math.round(accX);
+      const dy = Math.round(accY);
+      accX -= dx;
+      accY -= dy;
+      if (twoFinger) trackpadRef.current.onTrackpad?.({ type: 'scroll', deltaY: Math.round(dy / 6), deltaX: Math.round(dx / 6) });
+      else trackpadRef.current.onTrackpad?.({ type: 'move-rel', deltaX: dx, deltaY: dy });
+    };
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => trackpadRef.current.trackpad,
+      onMoveShouldSetPanResponder: () => trackpadRef.current.trackpad,
+      onPanResponderGrant: (e) => {
+        startAt = Date.now();
+        moved = 0;
+        fired = false;
+        twoFinger = e.nativeEvent.touches.length >= 2;
+        lastX = e.nativeEvent.pageX;
+        lastY = e.nativeEvent.pageY;
+        longPress = setTimeout(() => {
+          if (moved < 8 && !twoFinger) {
+            fired = true;
+            trackpadRef.current.onTrackpad?.({ type: 'rightclick-here' });
+            setRipple({ x: e.nativeEvent.locationX, y: e.nativeEvent.locationY, kind: 'right' });
+          }
+        }, 460);
+      },
+      onPanResponderMove: (e) => {
+        twoFinger = twoFinger || e.nativeEvent.touches.length >= 2;
+        const dx = e.nativeEvent.pageX - lastX;
+        const dy = e.nativeEvent.pageY - lastY;
+        lastX = e.nativeEvent.pageX;
+        lastY = e.nativeEvent.pageY;
+        moved += Math.abs(dx) + Math.abs(dy);
+        accX += dx * SENS;
+        accY += dy * SENS;
+        if (!flushTimer) flushTimer = setTimeout(flush, 16);
+      },
+      onPanResponderRelease: (e) => {
+        if (longPress) clearTimeout(longPress);
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flush();
+        }
+        if (!fired && !twoFinger && moved < 8 && Date.now() - startAt < 280) {
+          trackpadRef.current.onTrackpad?.({ type: 'click-here' });
+          setRipple({ x: e.nativeEvent.locationX, y: e.nativeEvent.locationY, kind: 'tap' });
+        }
+      },
+      onPanResponderTerminate: () => {
+        if (longPress) clearTimeout(longPress);
+      },
+    });
+  }, []);
+  useEffect(() => {
+    if (!ripple) return;
+    const t = setTimeout(() => setRipple(null), 320);
+    return () => clearTimeout(t);
+  }, [ripple]);
   const [slotA, setSlotA] = useState<string>(imageBase64);
   const [slotB, setSlotB] = useState<string>(imageBase64);
   const [frontSlot, setFrontSlot] = useState<'A' | 'B'>('A');
@@ -263,8 +348,9 @@ function DoubleBufferedMirrorCanvas({
         const { width: w, height: h } = e.nativeEvent.layout;
         if (w > 0 && h > 0) setCanvasSize({ width: w, height: h });
       }}
+      {...(trackpad ? panResponder.panHandlers : {})}
       onPress={(e) => {
-        if (!onTouchPoint) return;
+        if (!onTouchPoint || trackpad) return;
         const { locationX, locationY } = e.nativeEvent;
         const w = Math.max(canvasSize.width, 1);
         const h = Math.max(canvasSize.height, 1);
@@ -291,11 +377,31 @@ function DoubleBufferedMirrorCanvas({
         height,
         borderRadius: 12,
         borderWidth: 1.5,
-        borderColor: isLive ? COLORS.lime : COLORS.borderHi,
+        borderColor: trackpad ? COLORS.cyan : isLive ? COLORS.lime : COLORS.borderHi,
         backgroundColor: '#05050A',
         overflow: 'hidden',
       }}
     >
+      {ripple ? (
+        <Animated.View
+          key={`${ripple.x}-${ripple.y}-${ripple.kind}`}
+          entering={ZoomIn.duration(160).easing(Easing.bezier(0.16, 1, 0.3, 1))}
+          exiting={FadeOut.duration(140)}
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            left: ripple.x - 18,
+            top: ripple.y - 18,
+            width: 36,
+            height: 36,
+            borderRadius: 18,
+            borderWidth: 2,
+            borderColor: ripple.kind === 'right' ? COLORS.magenta : COLORS.cyan,
+            backgroundColor: ripple.kind === 'right' ? COLORS.magentaDim : COLORS.cyanDim,
+            zIndex: 11,
+          }}
+        />
+      ) : null}
       <Image
         source={{ uri: slotA }}
         fadeDuration={0}
@@ -431,12 +537,11 @@ export default function AgentDetailScreen({ route, navigation }: any) {
   const [peekLoading, setPeekLoading] = useState(false);
   const [liveMirrorStreaming, setLiveMirrorStreaming] = useState(true);
   const [mirrorFullScreen, setMirrorFullScreen] = useState(false);
-  const [mirrorTouchMode, setMirrorTouchMode] = useState<'click' | 'doubleclick' | 'rightclick' | 'move'>('click');
+  const [mirrorTouchMode, setMirrorTouchMode] = useState<'click' | 'doubleclick' | 'rightclick' | 'move' | 'trackpad'>('click');
   const [showAllMacApps, setShowAllMacApps] = useState(false);
-  const [macKeyText, setMacKeyText] = useState('');
-  const [liveKeyboard, setLiveKeyboard] = useState(true);
-  const [liveKeyCount, setLiveKeyCount] = useState(0);
-  const liveKeyPrevRef = useRef('');
+  const [macFocus, setMacFocus] = useState<MacFocusInfo | null>(null);
+  const [lastInputAck, setLastInputAck] = useState<MacInputAck | null>(null);
+  const inputIdRef = useRef(1);
   const [lastTouchStatus, setLastTouchStatus] = useState<string>('');
   const [peekData, setPeekData] = useState<MacMirrorFrame | null>(null);
 
@@ -449,55 +554,31 @@ export default function AgentDetailScreen({ route, navigation }: any) {
   const liveRef = useRef<LiveSocket | null>(null);
 
   /**
-   * LIVE KEYBOARD: fire a Mac input action over the WebSocket fast path (~5ms) and fall back
-   * to the HTTP `/api/local/mac-action` endpoint whenever the socket is not open.
+   * Fire a Mac input action over the WebSocket fast path (~5ms) with an id for latency acks,
+   * falling back to HTTP `/api/local/mac-action` whenever the socket is not open.
    */
-  const sendMacInput = useCallback(
-    (action: Parameters<typeof localMacAction>[0]) => {
-      const live = liveRef.current;
-      if (live?.isOpen()) {
-        live.send({ type: 'mirror:input', id: Date.now(), action });
-        return;
-      }
-      void localMacAction(action).catch(() => {});
-    },
-    [],
-  );
+  const sendMacInput = useCallback((action: MacInputAction): number => {
+    const id = inputIdRef.current++;
+    const live = liveRef.current;
+    if (live?.isOpen()) {
+      live.send({ type: 'mirror:input', id, action });
+      return id;
+    }
+    void localMacAction(action)
+      .then((res) => setLastInputAck({ id, ok: Boolean(res?.ok), detail: res?.detail, at: Date.now() }))
+      .catch(() => setLastInputAck({ id, ok: false, at: Date.now() }));
+    return id;
+  }, []);
 
-  /** Diff previous vs next composer text and mirror only the delta as real keystrokes on the Mac. */
-  const onLiveKeyboardChange = useCallback(
-    (next: string) => {
-      setMacKeyText(next);
-      if (!liveKeyboard) return;
-      const prev = liveKeyPrevRef.current;
-      liveKeyPrevRef.current = next;
-      if (next === prev) return;
-      let p = 0;
-      const max = Math.min(prev.length, next.length);
-      while (p < max && prev.charCodeAt(p) === next.charCodeAt(p)) p++;
-      const removed = prev.length - p;
-      const added = next.slice(p);
-      if (removed > 0) sendMacInput({ type: 'backspace', count: removed });
-      if (added.length > 0) sendMacInput({ type: 'type-text', text: added });
-      setLiveKeyCount((c) => c + removed + added.length);
-    },
-    [liveKeyboard, sendMacInput],
-  );
-
-  /** Enter on the phone keyboard = real Return key on the Mac (submits chat/search/form) and clears local buffer. */
-  const onLiveKeyboardSubmit = useCallback(() => {
-    if (liveKeyboard) {
-      sendMacInput({ type: 'send-key', target: 'enter' });
-      liveKeyPrevRef.current = '';
-      setMacKeyText('');
-      setLiveKeyCount((c) => c + 1);
+  /** Ask the bridge for an Accessibility snapshot of the Mac's focused field (focused-field echo). */
+  const requestMacFocus = useCallback(() => {
+    const live = liveRef.current;
+    if (live?.isOpen()) {
+      live.send({ type: 'mirror:focus' });
       return;
     }
-    const txt = macKeyText;
-    if (!txt) return;
-    setMacKeyText('');
-    sendMacInput({ type: 'type-text', text: txt + '\n' });
-  }, [liveKeyboard, macKeyText, sendMacInput]);
+    void localMacFocus().then(setMacFocus).catch(() => {});
+  }, []);
   const seqRef = useRef(Date.now());
   const receivedAnyRef = useRef(false);
   const firstServerEventRef = useRef(true);
@@ -785,6 +866,14 @@ export default function AgentDetailScreen({ route, navigation }: any) {
             if (msg.type === 'mirror:frame' && msg.frame) {
               setPeekLoading(false);
               setPeekData(msg.frame);
+              return;
+            }
+            if (msg.type === 'mirror:input:ack') {
+              setLastInputAck({ id: msg.id, ok: msg.ok, detail: msg.detail, at: Date.now() });
+              return;
+            }
+            if (msg.type === 'mirror:focus:info') {
+              setMacFocus(msg.focus ?? null);
               return;
             }
             if (msg.type === 'local:event' && msg.agentId === agent.id) {
@@ -1983,11 +2072,18 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                     aspectRatio={(peekData.screenWidth ?? 1440) / (peekData.screenHeight ?? 900)}
                     height={mirrorFullScreen ? 360 : 235}
                     isLive={liveMirrorStreaming}
+                    trackpad={mirrorTouchMode === 'trackpad'}
+                    onTrackpad={(action) => {
+                      sendMacInput(action);
+                      if (action.type === 'click-here') setLastTouchStatus('TRACKPAD CLICK');
+                      else if (action.type === 'rightclick-here') setLastTouchStatus('TRACKPAD RIGHT-CLICK');
+                    }}
                     onTouchPoint={(nx, ny) => {
+                      if (mirrorTouchMode === 'trackpad') return;
                       setLastTouchStatus(
                         `${mirrorTouchMode.toUpperCase()} @ (${Math.round(nx * 100)}%, ${Math.round(ny * 100)}%)`,
                       );
-                      void localMacAction({ type: mirrorTouchMode, x: nx, y: ny });
+                      sendMacInput({ type: mirrorTouchMode, x: nx, y: ny });
                     }}
                   />
 
@@ -1996,6 +2092,7 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                     <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
                       {(
                         [
+                          { id: 'trackpad', label: 'TRACKPAD' },
                           { id: 'click', label: 'TAP: CLICK' },
                           { id: 'doubleclick', label: 'TAP: DOUBLE' },
                           { id: 'rightclick', label: 'TAP: RIGHT' },
@@ -2043,102 +2140,15 @@ export default function AgentDetailScreen({ route, navigation }: any) {
                     </View>
                   </ScrollView>
 
-                  {/* Remote Mac Keyboard: LIVE mode mirrors every keystroke instantly into the focused Mac window */}
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-                      <KeyboardIcon size={12} color={liveKeyboard ? COLORS.lime : COLORS.dim} />
-                      <Text
-                        numberOfLines={1}
-                        style={[styles.branchChipText, { fontSize: 9.5, color: liveKeyboard ? COLORS.lime : COLORS.dim, flex: 1 }]}
-                      >
-                        {liveKeyboard ? 'LIVE KEYBOARD' : 'BATCH TYPE'} → {peekData?.frontApp || 'MAC'}
-                        {liveKeyCount > 0 ? ` · ${liveKeyCount} KEYS` : ''}
-                      </Text>
-                    </View>
-                    <SpringButton
-                      style={[
-                        styles.branchChip,
-                        liveKeyboard && { borderColor: COLORS.lime, backgroundColor: COLORS.limeDim },
-                      ]}
-                      onPress={() => {
-                        liveKeyPrevRef.current = macKeyText;
-                        setLiveKeyboard((v) => !v);
-                      }}
-                    >
-                      <Text style={[styles.branchChipText, { fontSize: 9.5, color: liveKeyboard ? COLORS.lime : COLORS.bone }]}>
-                        {liveKeyboard ? 'LIVE: ON' : 'LIVE: OFF'}
-                      </Text>
-                    </SpringButton>
-                  </View>
-                  <View style={styles.gitActionRow}>
-                    <TextInput
-                      style={[styles.gitInput, liveKeyboard && { borderColor: COLORS.lime }]}
-                      placeholder={
-                        liveKeyboard
-                          ? `Type here → appears live in ${peekData?.frontApp || 'Mac'} · Enter = Return`
-                          : 'Type text, then press TYPE to send to the Mac…'
-                      }
-                      placeholderTextColor={COLORS.dim}
-                      value={macKeyText}
-                      onChangeText={onLiveKeyboardChange}
-                      onSubmitEditing={onLiveKeyboardSubmit}
-                      onKeyPress={(e) => {
-                        // Mirror backspace even when the local buffer is already empty (deleting Mac-side text)
-                        if (liveKeyboard && e.nativeEvent.key === 'Backspace' && macKeyText.length === 0) {
-                          sendMacInput({ type: 'backspace', count: 1 });
-                          setLiveKeyCount((c) => c + 1);
-                        }
-                      }}
-                      blurOnSubmit={false}
-                      returnKeyType="send"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      spellCheck={false}
-                    />
-                    <SpringButton
-                      style={[styles.gitMiniBtn, liveKeyboard && { backgroundColor: COLORS.lime }]}
-                      disabled={!liveKeyboard && !macKeyText}
-                      onPress={onLiveKeyboardSubmit}
-                    >
-                      <Send size={12} color={COLORS.bg} />
-                      <Text style={styles.gitMiniBtnText}>{liveKeyboard ? 'ENTER' : 'TYPE'}</Text>
-                    </SpringButton>
-                  </View>
-
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                    <View style={{ flexDirection: 'row', gap: 6 }}>
-                      {[
-                        { label: 'ENTER', key: 'enter' },
-                        { label: 'SHIFT+ENTER', key: 'shift+enter' },
-                        { label: 'BACKSPACE', key: 'backspace' },
-                        { label: 'TAB', key: 'tab' },
-                        { label: 'ESC', key: 'escape' },
-                        { label: 'CMD+A', key: 'cmd+a' },
-                        { label: 'CMD+C', key: 'cmd+c' },
-                        { label: 'CMD+V', key: 'cmd+v' },
-                        { label: 'CMD+Z', key: 'cmd+z' },
-                        { label: 'CMD+S', key: 'cmd+s' },
-                        { label: 'CMD+L', key: 'cmd+l' },
-                        { label: 'CMD+K', key: 'cmd+k' },
-                        { label: 'CMD+TAB', key: 'cmd+tab' },
-                        { label: 'CMD+SPACE', key: 'cmd+space' },
-                        { label: 'CMD+R', key: 'reload' },
-                        { label: 'CMD+W', key: 'cmd+w' },
-                        { label: '↑', key: 'up' },
-                        { label: '↓', key: 'down' },
-                        { label: '←', key: 'left' },
-                        { label: '→', key: 'right' },
-                      ].map((k) => (
-                        <SpringButton
-                          key={k.key}
-                          style={styles.branchChip}
-                          onPress={() => sendMacInput({ type: 'send-key', target: k.key })}
-                        >
-                          <Text style={[styles.branchChipText, { fontSize: 9.5 }]}>{k.label}</Text>
-                        </SpringButton>
-                      ))}
-                    </View>
-                  </ScrollView>
+                  {/* Remote Mac Keyboard v2: live keystroke streaming, focused-field echo, clipboard, dictation, per-app rails */}
+                  <MacRemoteKeyboard
+                    frontApp={peekData?.frontApp ?? ''}
+                    focus={macFocus}
+                    lastAck={lastInputAck}
+                    send={sendMacInput}
+                    requestFocus={requestMacFocus}
+                    onStatus={setLastTouchStatus}
+                  />
 
                   <Text style={styles.diffModalSub}>
                     TOUCH SCREEN TO CONTROL MAC ·{' '}

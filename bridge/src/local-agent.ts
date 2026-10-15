@@ -51,6 +51,30 @@ export interface LocalAgent {
   };
 }
 
+/** Accessibility snapshot of the Mac's focused element, as returned by the native input daemon. */
+export interface MacFocusInfo {
+  ok: boolean;
+  trusted: boolean;
+  app: string;
+  bundleId?: string;
+  pid?: number;
+  role: string;
+  subrole?: string;
+  title?: string;
+  placeholder?: string;
+  description?: string;
+  editable: boolean;
+  secure: boolean;
+  multiline: boolean;
+  value?: string;
+  valueTruncated?: boolean;
+  valueLength?: number;
+  selectionStart?: number;
+  selectionLength?: number;
+  line?: number;
+  axError?: number;
+}
+
 export interface RunEvent {
   agentId: string;
   raw: unknown; // parsed NDJSON line from the CLI or synthetic CUSS turn metadata
@@ -852,12 +876,14 @@ export class LocalAgentService extends EventEmitter {
    * so touch events on the Android Live Mirror execute mouse clicks/scrolls in <10ms.
    */
   private async ensureMacInputBinary(): Promise<string> {
-    const binPath = '/tmp/cuss-mac-input-v2';
+    const binPath = '/tmp/cuss-mac-input-v3';
     if (existsSync(binPath)) return binPath;
-    const swiftPath = '/tmp/cuss-mac-input-v2.swift';
+    const swiftPath = '/tmp/cuss-mac-input-v3.swift';
     const swiftSrc = `
 import Foundation
 import CoreGraphics
+import ApplicationServices
+import AppKit
 
 let args = CommandLine.arguments
 let displayId = CGMainDisplayID()
@@ -868,6 +894,110 @@ let eventSource = CGEventSource(stateID: .combinedSessionState)
 if args.count < 2 || args[1] == "info" {
     print("\\(Int(width))x\\(Int(height))")
     exit(0)
+}
+
+func jsonString(_ s: String) -> String {
+    let d = try! JSONSerialization.data(withJSONObject: [s])
+    let arr = String(data: d, encoding: .utf8)!
+    return String(arr.dropFirst().dropLast())
+}
+
+/// Accessibility snapshot of the focused UI element (role, value, secure/multiline flags).
+/// Powers the phone's "focused-field echo" + secure-field lock + field-aware Enter.
+func focusedElementJSON() -> String {
+    let trusted = AXIsProcessTrusted()
+    var out: [String: Any] = ["trusted": trusted]
+    if let front = NSWorkspace.shared.frontmostApplication {
+        out["app"] = front.localizedName ?? ""
+        out["bundleId"] = front.bundleIdentifier ?? ""
+        out["pid"] = Int(front.processIdentifier)
+    }
+    guard trusted else {
+        let d = try! JSONSerialization.data(withJSONObject: out)
+        return String(data: d, encoding: .utf8)!
+    }
+    var focusedRef: CFTypeRef?
+    var r: AXError = .noValue
+    if let front = NSWorkspace.shared.frontmostApplication {
+        let appEl = AXUIElementCreateApplication(front.processIdentifier)
+        // Electron/Chromium (Cursor, Chrome, Slack, VS Code) only expose their AX tree once a client opts in.
+        AXUIElementSetAttributeValue(appEl, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(appEl, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        r = AXUIElementCopyAttributeValue(appEl, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+        var tries = 0
+        while (r != .success || focusedRef == nil) && tries < 3 {
+            usleep(80000)
+            r = AXUIElementCopyAttributeValue(appEl, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+            tries += 1
+        }
+        // Chromium reports the whole AXWebArea when focus is inside web content; drill into it.
+        if r == .success, let wa = focusedRef {
+            var waRole: CFTypeRef?
+            if AXUIElementCopyAttributeValue(wa as! AXUIElement, kAXRoleAttribute as CFString, &waRole) == .success, (waRole as? String) == "AXWebArea" {
+                var inner: CFTypeRef?
+                if AXUIElementCopyAttributeValue(wa as! AXUIElement, kAXFocusedUIElementAttribute as CFString, &inner) == .success, let inner = inner {
+                    focusedRef = inner
+                }
+            }
+        }
+        if r != .success || focusedRef == nil {
+            var winRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &winRef) == .success, let winRef = winRef {
+                r = AXUIElementCopyAttributeValue(winRef as! AXUIElement, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+            }
+        }
+    }
+    if r != .success || focusedRef == nil {
+        let sys = AXUIElementCreateSystemWide()
+        r = AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+    }
+    if r == .success, let focusedRef = focusedRef {
+        let el = focusedRef as! AXUIElement
+        func attr(_ name: String) -> Any? {
+            var v: CFTypeRef?
+            return AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success ? v : nil
+        }
+        let role = (attr(kAXRoleAttribute as String) as? String) ?? ""
+        let subrole = (attr(kAXSubroleAttribute as String) as? String) ?? ""
+        out["role"] = role
+        out["subrole"] = subrole
+        out["title"] = (attr(kAXTitleAttribute as String) as? String) ?? ""
+        out["placeholder"] = (attr(kAXPlaceholderValueAttribute as String) as? String) ?? ""
+        out["description"] = (attr(kAXDescriptionAttribute as String) as? String) ?? ""
+        let secure = role == (kAXTextFieldRole as String) && subrole == (kAXSecureTextFieldSubrole as String)
+        out["secure"] = secure
+        let editableRoles: Set<String> = [kAXTextFieldRole as String, kAXTextAreaRole as String, kAXComboBoxRole as String, "AXSearchField", "AXWebArea"]
+        var editable = editableRoles.contains(role)
+        var settable: DarwinBoolean = false
+        if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue { editable = true }
+        out["editable"] = editable
+        out["multiline"] = role == (kAXTextAreaRole as String) || role == "AXWebArea"
+        if !secure, let value = attr(kAXValueAttribute as String) as? String {
+            let max = 600
+            if value.count > max {
+                out["value"] = String(value.suffix(max))
+                out["valueTruncated"] = true
+                out["valueLength"] = value.count
+            } else {
+                out["value"] = value
+                out["valueLength"] = value.count
+            }
+        }
+        if let rangeVal = attr(kAXSelectedTextRangeAttribute as String) {
+            var range = CFRange()
+            if AXValueGetValue(rangeVal as! AXValue, .cfRange, &range) {
+                out["selectionStart"] = range.location
+                out["selectionLength"] = range.length
+            }
+        }
+        if let line = attr("AXInsertionPointLineNumber") as? Int, line >= 0, line < 1_000_000 { out["line"] = line }
+    } else {
+        out["role"] = ""
+        out["editable"] = false
+        out["axError"] = Int(r.rawValue)
+    }
+    let d = try! JSONSerialization.data(withJSONObject: out)
+    return String(data: d, encoding: .utf8)!
 }
 
 /// Type arbitrary Unicode text into the focused Mac window (Cursor, Chrome, Slack, Terminal, ...).
@@ -920,12 +1050,23 @@ func parseFlags(_ s: String) -> CGEventFlags {
     return f
 }
 
+func mouseLocation() -> CGPoint {
+    return CGEvent(source: nil)?.location ?? CGPoint(x: width / 2, y: height / 2)
+}
+
+var dragging = false
+
+func mouseEvent(_ type: CGEventType, _ pt: CGPoint, button: CGMouseButton = .left) {
+    CGEvent(mouseEventSource: eventSource, mouseType: type, mouseCursorPosition: pt, mouseButton: button)?.post(tap: .cghidEventTap)
+}
+
 /// Persistent daemon: reads one command per line from stdin so every phone keystroke lands in ~1ms.
-///   type <base64-utf8>        key <keycode> [cmd,shift,alt,ctrl]        backspace <count>
+///   type <base64-utf8>  key <keycode> [cmd,shift,alt,ctrl]  backspace <count>  focus
+///   moverel <dx> <dy>  down  up  clickhere  rightclickhere  scroll <dy> [dx]
 if args[1] == "daemon" {
     setvbuf(stdout, nil, _IOLBF, 0)
     while let line = readLine() {
-        let parts = line.split(separator: " ", maxSplits: 2).map(String.init)
+        let parts = line.split(separator: " ", maxSplits: 3).map(String.init)
         guard let cmd = parts.first else { continue }
         if cmd == "type", parts.count >= 2, let data = Data(base64Encoded: parts[1]), let text = String(data: data, encoding: .utf8) {
             typeUnicode(text)
@@ -937,6 +1078,36 @@ if args[1] == "daemon" {
             let n = parts.count >= 2 ? (Int(parts[1]) ?? 1) : 1
             for _ in 0..<max(1, min(n, 500)) { pressKey(51, flags: []) }
             print("OK backspace \\(n)")
+        } else if cmd == "focus" {
+            print("FOCUS " + focusedElementJSON())
+        } else if cmd == "moverel", parts.count >= 3 {
+            let dx = Double(parts[1]) ?? 0
+            let dy = Double(parts[2]) ?? 0
+            let cur = mouseLocation()
+            let pt = CGPoint(x: max(0, min(width - 1, cur.x + dx)), y: max(0, min(height - 1, cur.y + dy)))
+            mouseEvent(dragging ? .leftMouseDragged : .mouseMoved, pt)
+            print("OK moverel \\(Int(pt.x)),\\(Int(pt.y))")
+        } else if cmd == "down" {
+            dragging = true
+            mouseEvent(.leftMouseDown, mouseLocation())
+            print("OK down")
+        } else if cmd == "up" {
+            dragging = false
+            mouseEvent(.leftMouseUp, mouseLocation())
+            print("OK up")
+        } else if cmd == "clickhere" {
+            let pt = mouseLocation()
+            mouseEvent(.leftMouseDown, pt); usleep(14000); mouseEvent(.leftMouseUp, pt)
+            print("OK clickhere \\(Int(pt.x)),\\(Int(pt.y))")
+        } else if cmd == "rightclickhere" {
+            let pt = mouseLocation()
+            mouseEvent(.rightMouseDown, pt, button: .right); usleep(14000); mouseEvent(.rightMouseUp, pt, button: .right)
+            print("OK rightclickhere")
+        } else if cmd == "scroll", parts.count >= 2 {
+            let dy = Int32(parts[1]) ?? -5
+            let dx = parts.count >= 3 ? (Int32(parts[2]) ?? 0) : 0
+            CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0)?.post(tap: .cghidEventTap)
+            print("OK scroll \\(dy)")
         } else if cmd == "ping" {
             print("PONG")
         } else {
@@ -1021,30 +1192,67 @@ if (mode == "click" || mode == "doubleclick" || mode == "rightclick" || mode == 
   }
 
   /**
-   * Send one keyboard command line to the native daemon. Calls are serialized so rapid phone
-   * keystrokes always land on the Mac in the exact order they were typed.
+   * Send one command line to the native daemon and resolve with its single response line.
+   * Calls are serialized so rapid phone keystrokes always land on the Mac in the exact order typed.
+   * Resolves `null` when the daemon is unavailable (callers fall back to osascript).
    */
-  private macInput(line: string): Promise<boolean> {
+  private macInput(line: string): Promise<string | null> {
     const run = async () => {
       const d = await this.ensureMacInputDaemon();
-      if (!d?.stdin?.writable) return false;
-      return await new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => {
-          d.stdout?.off('data', onData);
-          resolve(true);
-        }, 1500);
-        const onData = () => {
+      if (!d?.stdin?.writable) return null;
+      return await new Promise<string | null>((resolve) => {
+        let buf = '';
+        const finish = (v: string | null) => {
           clearTimeout(timer);
           d.stdout?.off('data', onData);
-          resolve(true);
+          resolve(v);
         };
-        d.stdout?.once('data', onData);
+        const timer = setTimeout(() => finish(buf || 'TIMEOUT'), 2500);
+        const onData = (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          if (buf.includes('\n')) finish(buf.split('\n')[0]);
+        };
+        d.stdout?.on('data', onData);
         d.stdin!.write(line + '\n');
       });
     };
     const next = this.macInputChain.then(run, run);
     this.macInputChain = next.catch(() => {});
     return next;
+  }
+
+  /** Accessibility snapshot of the Mac's focused UI element (role, value, secure/multiline flags). */
+  async getMacFocus(): Promise<MacFocusInfo> {
+    const res = await this.macInput('focus');
+    if (res && res.startsWith('FOCUS ')) {
+      try {
+        return { ok: true, ...(JSON.parse(res.slice(6)) as Omit<MacFocusInfo, 'ok'>) };
+      } catch {
+        /* fallthrough */
+      }
+    }
+    return { ok: false, trusted: false, app: '', role: '', editable: false, secure: false, multiline: false };
+  }
+
+  /** Read the Mac clipboard (pbpaste). */
+  async getMacClipboard(): Promise<{ text: string }> {
+    return await new Promise((resolve) => {
+      const p = spawn('pbpaste', [], { env: RUN_ENV, stdio: ['ignore', 'pipe', 'ignore'] });
+      let out = '';
+      p.stdout.on('data', (d) => (out += d.toString('utf8')));
+      p.on('error', () => resolve({ text: '' }));
+      p.on('exit', () => resolve({ text: out }));
+    });
+  }
+
+  /** Write the Mac clipboard (pbcopy). */
+  async setMacClipboard(text: string): Promise<boolean> {
+    return await new Promise((resolve) => {
+      const p = spawn('pbcopy', [], { env: RUN_ENV, stdio: ['pipe', 'ignore', 'ignore'] });
+      p.on('error', () => resolve(false));
+      p.on('exit', (code) => resolve(code === 0));
+      p.stdin.end(text, 'utf8');
+    });
   }
 
   /**
@@ -1254,14 +1462,43 @@ return appName & "|||" & winTitle & "|||" & openStr
       | 'move'
       | 'scroll'
       | 'type-text'
-      | 'backspace';
+      | 'backspace'
+      | 'move-rel'
+      | 'mouse-down'
+      | 'mouse-up'
+      | 'click-here'
+      | 'rightclick-here'
+      | 'paste-text'
+      | 'clipboard-set';
     target?: string;
     x?: number;
     y?: number;
     deltaY?: number;
+    deltaX?: number;
     text?: string;
     count?: number;
   }): Promise<{ ok: boolean; detail?: string }> {
+    if (action.type === 'move-rel') {
+      const dx = Math.round(Number(action.deltaX ?? 0));
+      const dy = Math.round(Number(action.deltaY ?? 0));
+      const r = await this.macInput(`moverel ${dx} ${dy}`);
+      return { ok: Boolean(r), detail: r ?? undefined };
+    }
+    if (action.type === 'mouse-down' || action.type === 'mouse-up' || action.type === 'click-here' || action.type === 'rightclick-here') {
+      const cmd = { 'mouse-down': 'down', 'mouse-up': 'up', 'click-here': 'clickhere', 'rightclick-here': 'rightclickhere' }[action.type];
+      const r = await this.macInput(cmd);
+      return { ok: Boolean(r), detail: r ?? undefined };
+    }
+    if (action.type === 'clipboard-set' && typeof action.text === 'string') {
+      const ok = await this.setMacClipboard(action.text);
+      return { ok, detail: ok ? `Clipboard ← ${action.text.length} chars` : 'pbcopy failed' };
+    }
+    if (action.type === 'paste-text' && typeof action.text === 'string') {
+      // Fast long-text insertion: pbcopy + Cmd+V (one native keystroke instead of N unicode events)
+      const ok = await this.setMacClipboard(action.text);
+      if (ok) await this.macInput('key 9 cmd');
+      return { ok, detail: ok ? `Pasted ${action.text.length} chars` : 'pbcopy failed' };
+    }
     if (action.type === 'focus-app' && action.target) {
       const appName = action.target.trim();
       await new Promise<void>((resolve) => {
@@ -1295,13 +1532,18 @@ return appName & "|||" & winTitle & "|||" & openStr
     }
 
     if (action.type === 'scroll') {
-      const bin = await this.ensureMacInputBinary();
       const dy = Math.round(Number(action.deltaY ?? -6));
-      await new Promise<void>((resolve) => {
-        const p = spawn(bin, ['scroll', String(dy)], { env: RUN_ENV });
-        p.on('error', () => resolve());
-        p.on('exit', () => resolve());
-      });
+      const dx = Math.round(Number(action.deltaX ?? 0));
+      // Pixel-unit scroll through the daemon (line-unit legacy binary path as fallback)
+      const r = await this.macInput(`scroll ${dy * 12} ${dx * 12}`);
+      if (!r) {
+        const bin = await this.ensureMacInputBinary();
+        await new Promise<void>((resolve) => {
+          const p = spawn(bin, ['scroll', String(dy)], { env: RUN_ENV });
+          p.on('error', () => resolve());
+          p.on('exit', () => resolve());
+        });
+      }
       return { ok: true, detail: `Scrolled ${dy}` };
     }
 
@@ -1360,13 +1602,48 @@ return appName & "|||" & winTitle & "|||" & openStr
         'cmd+space': [49, 'cmd'],
         'cmd+shift+p': [35, 'cmd,shift'],
         'ctrl+c': [8, 'ctrl'],
+        'ctrl+d': [2, 'ctrl'],
+        'ctrl+l': [37, 'ctrl'],
+        'ctrl+r': [15, 'ctrl'],
         'alt+backspace': [51, 'alt'],
         'cmd+backspace': [51, 'cmd'],
+        'cmd+n': [45, 'cmd'],
+        'cmd+b': [11, 'cmd'],
+        'cmd+e': [14, 'cmd'],
+        'cmd+d': [2, 'cmd'],
+        'cmd+p': [35, 'cmd'],
+        'cmd+/': [44, 'cmd'],
+        'cmd+,': [43, 'cmd'],
+        'cmd+[': [33, 'cmd'],
+        'cmd+]': [30, 'cmd'],
+        'cmd+shift+f': [3, 'cmd,shift'],
+        'cmd+shift+g': [5, 'cmd,shift'],
+        'cmd+shift+l': [37, 'cmd,shift'],
+        'cmd+shift+t': [17, 'cmd,shift'],
+        'cmd+shift+enter': [36, 'cmd,shift'],
+        'cmd+shift+]': [30, 'cmd,shift'],
+        'cmd+shift+[': [33, 'cmd,shift'],
+        'cmd+alt+i': [34, 'cmd,alt'],
+        'alt+left': [123, 'alt'],
+        'alt+right': [124, 'alt'],
+        'cmd+left': [123, 'cmd'],
+        'cmd+right': [124, 'cmd'],
+        'cmd+up': [126, 'cmd'],
+        'cmd+down': [125, 'cmd'],
+        'shift+tab': [48, 'shift'],
+        'cmd+1': [18, 'cmd'],
+        'cmd+2': [19, 'cmd'],
+        'cmd+3': [20, 'cmd'],
+        'cmd+9': [25, 'cmd'],
+        f5: [96, ''],
+        'ctrl+`': [50, 'ctrl'],
+        'cmd+shift+a': [0, 'cmd,shift'],
+        'cmd+shift+n': [45, 'cmd,shift'],
       };
       const native = nativeKeys[action.target.toLowerCase()];
       if (native) {
-        const ok = await this.macInput(`key ${native[0]}${native[1] ? ` ${native[1]}` : ''}`);
-        if (ok) return { ok: true, detail: `Sent ${action.target}` };
+        const r = await this.macInput(`key ${native[0]}${native[1] ? ` ${native[1]}` : ''}`);
+        if (r) return { ok: true, detail: `Sent ${action.target}` };
       }
       const keyMap: Record<string, string> = {
         enter: 'key code 36',

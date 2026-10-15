@@ -256,11 +256,19 @@ export const localMacAction = (body: {
     | 'move'
     | 'scroll'
     | 'type-text'
-    | 'backspace';
+    | 'backspace'
+    | 'move-rel'
+    | 'mouse-down'
+    | 'mouse-up'
+    | 'click-here'
+    | 'rightclick-here'
+    | 'paste-text'
+    | 'clipboard-set';
   target?: string;
   x?: number;
   y?: number;
   deltaY?: number;
+  deltaX?: number;
   text?: string;
   count?: number;
 }) =>
@@ -269,6 +277,34 @@ export const localMacAction = (body: {
     body,
     timeoutMs: 6_000,
   });
+
+export type MacInputAction = Parameters<typeof localMacAction>[0];
+
+/** Accessibility snapshot of the focused Mac field (focused-field echo, secure lock, field-aware Enter). */
+export interface MacFocusInfo {
+  ok: boolean;
+  trusted: boolean;
+  app: string;
+  bundleId?: string;
+  role: string;
+  subrole?: string;
+  title?: string;
+  placeholder?: string;
+  description?: string;
+  editable: boolean;
+  secure: boolean;
+  multiline: boolean;
+  value?: string;
+  valueTruncated?: boolean;
+  valueLength?: number;
+  selectionStart?: number;
+  selectionLength?: number;
+  line?: number;
+  axError?: number;
+}
+
+export const localMacFocus = () => api<MacFocusInfo>('/api/local/mac-focus', { timeoutMs: 5_000 });
+export const localMacClipboard = () => api<{ text: string }>('/api/local/mac-clipboard', { timeoutMs: 5_000 });
 
 export const localTranscribe = (audioBase64: string, ext = 'm4a') =>
   api<{ text: string }>('/api/local/transcribe', {
