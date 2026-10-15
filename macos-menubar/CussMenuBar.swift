@@ -1,9 +1,11 @@
 import Cocoa
+import CoreImage
 import Foundation
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
-    var statusMenuItem: NSMenuItem!
+    var bridgeStatusItem: NSMenuItem!
+    var expoStatusItem: NSMenuItem!
     var authMenuItem: NSMenuItem!
     var urlMenuItem: NSMenuItem!
     var hudWindow: NSWindow?
@@ -23,23 +25,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
 
-        statusMenuItem = NSMenuItem(title: "● Bridge: Checking…", action: nil, keyEquivalent: "")
-        menu.addItem(statusMenuItem)
+        bridgeStatusItem = NSMenuItem(title: "● Bridge (4040): Checking…", action: nil, keyEquivalent: "")
+        menu.addItem(bridgeStatusItem)
+
+        expoStatusItem = NSMenuItem(title: "● Expo Go (8081): Checking…", action: nil, keyEquivalent: "")
+        menu.addItem(expoStatusItem)
 
         authMenuItem = NSMenuItem(title: "✓ Cursor Auth: Syncing…", action: nil, keyEquivalent: "")
         menu.addItem(authMenuItem)
 
-        urlMenuItem = NSMenuItem(title: "LAN: http://127.0.0.1:4040", action: #selector(copyLanUrl), keyEquivalent: "u")
+        urlMenuItem = NSMenuItem(title: "Expo URL: exp://127.0.0.1:8081", action: #selector(copyExpoUrl), keyEquivalent: "e")
         urlMenuItem.target = self
         menu.addItem(urlMenuItem)
 
         menu.addItem(NSMenuItem.separator())
 
-        let hudItem = NSMenuItem(title: "Open CUSS Pairing & Control HUD…", action: #selector(showHudWindow), keyEquivalent: "p")
+        let hudItem = NSMenuItem(title: "Show Expo Go QR Code & Control HUD…", action: #selector(showHudWindow), keyEquivalent: "p")
         hudItem.target = self
         menu.addItem(hudItem)
 
-        let copyUrlItem = NSMenuItem(title: "Copy Mac LAN URL", action: #selector(copyLanUrl), keyEquivalent: "c")
+        let copyExpoItem = NSMenuItem(title: "Copy Expo Go URL (exp://…:8081)", action: #selector(copyExpoUrl), keyEquivalent: "u")
+        copyExpoItem.target = self
+        menu.addItem(copyExpoItem)
+
+        let copyUrlItem = NSMenuItem(title: "Copy Mac Bridge URL (http://…:4040)", action: #selector(copyLanUrl), keyEquivalent: "c")
         copyUrlItem.target = self
         menu.addItem(copyUrlItem)
 
@@ -49,11 +58,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let syncAuthItem = NSMenuItem(title: "Sync Cursor Desktop Login (Zero-Terminal)", action: #selector(syncCursorAuthNow), keyEquivalent: "s")
+        let syncAuthItem = NSMenuItem(title: "Sync Cursor Desktop Login Now", action: #selector(syncCursorAuthNow), keyEquivalent: "s")
         syncAuthItem.target = self
         menu.addItem(syncAuthItem)
 
-        let restartItem = NSMenuItem(title: "Restart CUSS Bridge Service (Port 4040)", action: #selector(restartBridge), keyEquivalent: "r")
+        let restartItem = NSMenuItem(title: "Restart Bridge + Expo Go Background Services", action: #selector(restartServices), keyEquivalent: "r")
         restartItem.target = self
         menu.addItem(restartItem)
 
@@ -137,30 +146,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func refreshStatus() {
         let ip = getLanIp()
-        urlMenuItem.title = "LAN URL: http://\(ip):4040 (Click to Copy)"
+        urlMenuItem.title = "Expo Go: exp://\(ip):8081 (Click to Copy)"
 
-        guard let url = URL(string: "http://127.0.0.1:4040/api/health") else { return }
-        let task = URLSession.shared.dataTask(with: url) { data, response, error in
-            let ok = (response as? HTTPURLResponse)?.statusCode == 200
-            DispatchQueue.main.async {
-                if ok {
-                    self.statusItem.button?.title = "⚡ CUSS"
-                    self.statusMenuItem.title = "● Bridge: ONLINE (Port 4040)"
-                } else {
-                    self.statusItem.button?.title = "○ CUSS"
-                    self.statusMenuItem.title = "○ Bridge: Starting automatically…"
-                    self.ensureBridgeRunning()
+        // Check Bridge (port 4040)
+        if let bridgeUrl = URL(string: "http://127.0.0.1:4040/api/health") {
+            URLSession.shared.dataTask(with: bridgeUrl) { _, response, _ in
+                let ok = (response as? HTTPURLResponse)?.statusCode == 200
+                DispatchQueue.main.async {
+                    self.bridgeStatusItem.title = ok
+                        ? "● Bridge (4040): ONLINE (http://\(ip):4040)"
+                        : "○ Bridge (4040): Starting…"
                 }
-            }
+            }.resume()
         }
-        task.resume()
-    }
 
-    func ensureBridgeRunning() {
-        let task = Process()
-        task.launchPath = "/bin/bash"
-        task.arguments = ["\(repoRoot)/start-cuss.sh", "--install-service"]
-        try? task.run()
+        // Check Expo Go Metro Server (port 8081)
+        if let expoUrl = URL(string: "http://127.0.0.1:8081/status") {
+            URLSession.shared.dataTask(with: expoUrl) { _, response, _ in
+                let ok = (response as? HTTPURLResponse)?.statusCode == 200
+                DispatchQueue.main.async {
+                    self.expoStatusItem.title = ok
+                        ? "● Expo Go (8081): ONLINE (exp://\(ip):8081)"
+                        : "○ Expo Go (8081): Starting…"
+                }
+            }.resume()
+        }
     }
 
     @objc func syncCursorAuthNow() {
@@ -179,6 +189,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func copyExpoUrl() {
+        let ip = getLanIp()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("exp://\(ip):8081", forType: .string)
+    }
+
     @objc func copyLanUrl() {
         let ip = getLanIp()
         NSPasteboard.general.clearContents()
@@ -191,50 +207,87 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSPasteboard.general.setString(tok, forType: .string)
     }
 
-    @objc func restartBridge() {
-        ensureBridgeRunning()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            self.refreshStatus()
-        }
+    @objc func restartServices() {
+        let task = Process()
+        task.launchPath = "/bin/bash"
+        task.arguments = ["\(repoRoot)/macos-menubar/build-menubar-app.sh", "--restart-daemons-only"]
+        try? task.run()
     }
 
     @objc func openLogs() {
         NSWorkspace.shared.open(URL(fileURLWithPath: "/tmp/cuss-bridge.log"))
     }
 
+    func generateQrImage(from string: String, size: CGFloat) -> NSImage? {
+        guard let data = string.data(using: .utf8),
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let ciImage = filter.outputImage else { return nil }
+        let scaleX = size / ciImage.extent.size.width
+        let scaleY = size / ciImage.extent.size.height
+        let transformed = ciImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        let rep = NSCIImageRep(ciImage: transformed)
+        let nsImage = NSImage(size: rep.size)
+        nsImage.addRepresentation(rep)
+        return nsImage
+    }
+
     @objc func showHudWindow() {
         let ip = getLanIp()
         let tok = getPairingToken()
         let email = queryStateDb("cursorAuth/cachedEmail")
+        let expoUri = "exp://\(ip):8081"
 
         if hudWindow == nil {
             let win = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 460, height: 260),
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
             )
-            win.title = "CUSS // MAC MENU BAR CONTROL DECK"
+            win.title = "⚡ CUSS // ZERO-TERMINAL MAC MENU BAR HUD"
             win.backgroundColor = NSColor(calibratedRed: 0.04, green: 0.04, blue: 0.07, alpha: 1.0)
             win.center()
             hudWindow = win
         }
 
-        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 260))
-        let label = NSTextField(wrappingLabelWithString: """
-        ⚡ CUSS — CYBERNETIC UMBILICAL STUDIO (MAC MENU BAR)
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 320))
 
-        • Bridge Status:   ONLINE (Auto-Managed via launchd)
-        • Cursor Account:  \(email.isEmpty ? "Synced via ~/.cursor/auth.json" : email)
-        • Mac LAN URL:     http://\(ip):4040
-        • Pairing Token:   \(tok)
+        // Left: Scannable Expo Go QR Code
+        if let qrImg = generateQrImage(from: expoUri, size: 170) {
+            let qrBox = NSView(frame: NSRect(x: 22, y: 74, width: 186, height: 186))
+            qrBox.wantsLayer = true
+            qrBox.layer?.backgroundColor = NSColor.white.cgColor
+            qrBox.layer?.cornerRadius = 12
+            let imgView = NSImageView(frame: NSRect(x: 8, y: 8, width: 170, height: 170))
+            imgView.image = qrImg
+            qrBox.addSubview(imgView)
+            contentView.addSubview(qrBox)
+        }
 
-        Your Android phone auto-detects http://\(ip):4040 over Wi-Fi and syncs your Cursor login automatically with zero terminal commands needed.
+        // Right: Telemetry Readout
+        let infoText = NSTextField(wrappingLabelWithString: """
+        ⚡ CUSS — ZERO-TERMINAL CONTROL DECK
+
+        SCAN QR WITH EXPO GO ON ANDROID:
+        \(expoUri)
+
+        MAC BRIDGE (AUTO-PAIRED):
+        http://\(ip):4040
+
+        CURSOR ACCOUNT (AUTO-SYNCED):
+        \(email.isEmpty ? "Synced (~/.cursor/auth.json)" : email)
+
+        PAIRING TOKEN:
+        \(tok)
+
+        Both the Mac Bridge (4040) and Expo Server (8081) run automatically in the background on Mac login — no terminal or `npm start` needed!
         """)
-        label.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
-        label.textColor = NSColor(calibratedRed: 0.83, green: 1.0, blue: 0.0, alpha: 1.0)
-        label.frame = NSRect(x: 22, y: 20, width: 416, height: 220)
-        contentView.addSubview(label)
+        infoText.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
+        infoText.textColor = NSColor(calibratedRed: 0.83, green: 1.0, blue: 0.0, alpha: 1.0)
+        infoText.frame = NSRect(x: 226, y: 24, width: 274, height: 270)
+        contentView.addSubview(infoText)
 
         hudWindow?.contentView = contentView
         hudWindow?.makeKeyAndOrderFront(nil)
