@@ -212,10 +212,12 @@ def make_dmg_background() -> Image.Image:
     sub = font("SpaceMono-Bold.ttf", 28)
     s = "DOUBLE-CLICK  [ INSTALL CUSS ]  //  DRIVE CURSOR FROM YOUR PHONE"
     d.text((W / 2 - d.textlength(s, font=sub) / 2, 250), s, font=sub, fill=CYAN)
-    # arrow from installer slot (left) to Applications slot (right) -- slots at y≈520pt
+    # dashed "slot" reticle behind the installer icon (Finder places it at 330x250 pt → 660x500 px)
     ad = ImageDraw.Draw(img)
-    ad.line((520, 560, 790, 560), fill=LIME, width=10)
-    ad.polygon([(790, 530), (840, 560), (790, 590)], fill=LIME)
+    cx, cy, r = 660, 500, 170
+    for i in range(0, 360, 12):
+        ad.arc((cx - r, cy - r, cx + r, cy + r), i, i + 6, fill=CYAN[:3] + (140,), width=4)
+    ad.arc((cx - r + 18, cy - r + 18, cx + r - 18, cy + r - 18), 200, 340, fill=LIME, width=5)
     small = font("SpaceMono-Regular.ttf", 22)
     foot = "Zero API keys · Zero terminal · Runs in your Mac menu bar"
     d.text((W / 2 - d.textlength(foot, font=small) / 2, H - 70), foot, font=small, fill=BONE[:3] + (160,))

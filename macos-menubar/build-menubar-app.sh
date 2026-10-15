@@ -109,6 +109,12 @@ mkdir -p "$MACOS_DIR"
   -framework Cocoa \
   -framework CoreImage \
   -o "$MACOS_DIR/CussMenuBar"
+mkdir -p "$CONTENTS_DIR/Resources"
+cp "$ROOT_DIR/assets/brand/CUSS.icns" "$CONTENTS_DIR/Resources/CUSS.icns"
+
+# Developer checkout: point the Menu Bar app at this repo
+mkdir -p "$HOME/.config/mission-control"
+printf '{"home":"%s","node":"%s","mode":"dev"}\n' "$ROOT_DIR" "$NODE_BIN" > "$HOME/.config/mission-control/install.json"
 
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -121,6 +127,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
   <string>com.local.cuss.menubar</string>
   <key>CFBundleName</key>
   <string>CUSS Menu</string>
+  <key>CFBundleIconFile</key>
+  <string>CUSS</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

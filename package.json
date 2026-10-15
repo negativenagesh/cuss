@@ -9,6 +9,9 @@
     "service:install": "bash ./start-cuss.sh --install-service",
     "service:uninstall": "bash ./start-cuss.sh --uninstall-service",
     "menubar:install": "bash ./macos-menubar/build-menubar-app.sh",
+    "native:build": "bash ./bridge/native/build.sh",
+    "brand:assets": "python3 ./assets/brand/generate-brand-assets.py",
+    "dmg": "bash ./installer/build-dmg.sh",
     "test": "npm --prefix bridge test && ./bridge/node_modules/.bin/tsc -p bridge/tsconfig.json --noEmit && ./mobile/node_modules/.bin/tsc -p mobile/tsconfig.json --noEmit"
   }
 }

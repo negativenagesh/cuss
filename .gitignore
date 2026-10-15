@@ -39,3 +39,6 @@ captures/
 exported-scripts/
 
 # Bridge pairing token lives in ~/.config/mission-control (outside repo) — never copy it here.
+
+# Precompiled native helpers are rebuilt by bridge/native/build.sh
+bridge/bin/
