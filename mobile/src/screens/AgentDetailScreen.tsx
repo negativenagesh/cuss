@@ -17,7 +17,6 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import Animated, { Easing, FadeOut, ZoomIn } from 'react-native-reanimated';
 import CursorComposer, { ComposerSubmitPayload } from '../components/CursorComposer';
 import MacRemoteKeyboard, { MacInputAck } from '../components/MacRemoteKeyboard';
 import {
@@ -383,10 +382,8 @@ function DoubleBufferedMirrorCanvas({
       }}
     >
       {ripple ? (
-        <Animated.View
+        <View
           key={`${ripple.x}-${ripple.y}-${ripple.kind}`}
-          entering={ZoomIn.duration(160).easing(Easing.bezier(0.16, 1, 0.3, 1))}
-          exiting={FadeOut.duration(140)}
           pointerEvents="none"
           style={{
             position: 'absolute',

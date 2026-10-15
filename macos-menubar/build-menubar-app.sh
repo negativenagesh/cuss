@@ -76,6 +76,7 @@ cat > "$PLIST_EXPO" <<EOF
     <string>start</string>
     <string>--port</string>
     <string>8081</string>
+    <string>--clear</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -164,10 +165,10 @@ EOF
 launchctl unload "$PLIST_BRIDGE" 2>/dev/null || true
 launchctl load "$PLIST_BRIDGE"
 
-if ! /usr/sbin/lsof -ti :8081 >/dev/null 2>&1; then
-  launchctl unload "$PLIST_EXPO" 2>/dev/null || true
-  launchctl load "$PLIST_EXPO"
-fi
+/usr/sbin/lsof -ti :8081 | xargs kill -9 2>/dev/null || true
+rm -rf /var/folders/*/*/T/metro-cache "$MOBILE_DIR/.expo" 2>/dev/null || true
+launchctl unload "$PLIST_EXPO" 2>/dev/null || true
+launchctl load "$PLIST_EXPO"
 
 launchctl unload "$PLIST_MENUBAR" 2>/dev/null || true
 launchctl load "$PLIST_MENUBAR"

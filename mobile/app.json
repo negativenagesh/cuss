@@ -2,7 +2,7 @@
   "expo": {
     "name": "CUSS",
     "slug": "cuss",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "missioncontrol",
@@ -10,7 +10,7 @@
     "icon": "./assets/icon.png",
     "android": {
       "package": "com.local.cuss",
-      "versionCode": 5,
+      "versionCode": 6,
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
@@ -71,9 +71,9 @@
         {
           "android": {
             "usesCleartextTraffic": true,
-            "enableProguardInReleaseBuilds": true,
-            "enableShrinkResourcesInReleaseBuilds": true,
-            "enableMinifyInReleaseBuilds": true
+            "enableProguardInReleaseBuilds": false,
+            "enableShrinkResourcesInReleaseBuilds": false,
+            "enableMinifyInReleaseBuilds": false
           }
         }
       ],

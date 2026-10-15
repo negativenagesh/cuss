@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import LottieView from 'lottie-react-native';
 import Animated, {
+  Easing,
   useAnimatedStyle,
   useSharedValue,
   withDelay,
@@ -14,222 +14,108 @@ import Svg, { Circle, G, Line, Path, Polygon, Rect } from 'react-native-svg';
 import { COLORS, FONTS, MOTION } from '../theme';
 
 /**
- * Multi-layer Lottie JSON animation built following `LottieFiles/motion-design-skill`:
- * - Layer 1 (Primary): Rotating octagonal cyber-reticle (180 frames, 60fps = 3.0s)
- * - Layer 2 (Secondary): Pulsing Acid-Lime / Magenta inner core with overshoot
- * - Layer 3 (Ambient): Breathing outer halo ring (scale 96% <-> 104%)
+ * Multi-layer 60fps SVG + Reanimated Cyber-Core animation built following `@motion-design`:
+ * - Layer 1 (Primary): Rotating 8-point octagonal cyber-reticle (3.0s continuous rotation)
+ * - Layer 2 (Secondary): Counter-rotating & pulsing Acid-Lime / Magenta inner diamond core
+ * - Layer 3 (Ambient): Breathing outer cyan halo ring (scale 94% <-> 106%)
+ * Pure SVG + Reanimated guarantees zero native Lottie/GL parser exceptions on Android.
  */
-const CUSS_CORE_LOTTIE = {
-  v: '5.7.4',
-  fr: 60,
-  ip: 0,
-  op: 180,
-  w: 160,
-  h: 160,
-  nm: 'CussCyberCore',
-  ddd: 0,
-  assets: [],
-  layers: [
-    {
-      ddd: 0,
-      ind: 1,
-      ty: 4,
-      nm: 'PrimaryReticle',
-      sr: 1,
-      ks: {
-        o: { a: 0, k: 100 },
-        r: {
-          a: 1,
-          k: [
-            { t: 0, s: [0], e: [360], i: { x: [0.5], y: [0.5] }, o: { x: [0.5], y: [0.5] } },
-            { t: 180, s: [360] },
-          ],
-        },
-        p: { a: 0, k: [80, 80, 0] },
-        a: { a: 0, k: [0, 0, 0] },
-        s: { a: 0, k: [100, 100, 100] },
-      },
-      ao: 0,
-      shapes: [
-        {
-          ty: 'gr',
-          it: [
-            {
-              ty: 'sr',
-              sy: 1,
-              d: 1,
-              pt: { a: 0, k: 8 },
-              p: { a: 0, k: [0, 0] },
-              r: { a: 0, k: 0 },
-              ir: { a: 0, k: 34 },
-              is: { a: 0, k: 0 },
-              or: { a: 0, k: 56 },
-              os: { a: 0, k: 0 },
-              nm: 'StarReticle',
-            },
-            {
-              ty: 'st',
-              c: { a: 0, k: [0.831, 1, 0, 1] },
-              o: { a: 0, k: 95 },
-              w: { a: 0, k: 3 },
-              lc: 2,
-              lj: 2,
-              nm: 'LimeStroke',
-            },
-            {
-              ty: 'tr',
-              p: { a: 0, k: [0, 0] },
-              a: { a: 0, k: [0, 0] },
-              s: { a: 0, k: [100, 100] },
-              r: { a: 0, k: 0 },
-              o: { a: 0, k: 100 },
-            },
-          ],
-          nm: 'ReticleGroup',
-        },
-      ],
-      ip: 0,
-      op: 180,
-      st: 0,
-      bm: 0,
-    },
-    {
-      ddd: 0,
-      ind: 2,
-      ty: 4,
-      nm: 'SecondaryCorePulse',
-      sr: 1,
-      ks: {
-        o: { a: 0, k: 100 },
-        r: {
-          a: 1,
-          k: [
-            { t: 0, s: [360], e: [0], i: { x: [0.4], y: [0.2] }, o: { x: [0.4], y: [0] } },
-            { t: 180, s: [0] },
-          ],
-        },
-        p: { a: 0, k: [80, 80, 0] },
-        a: { a: 0, k: [0, 0, 0] },
-        s: {
-          a: 1,
-          k: [
-            { t: 0, s: [75, 75, 100], e: [115, 115, 100], i: { x: [0.2, 0.2, 0.2], y: [1, 1, 1] }, o: { x: [0.4, 0.4, 0.4], y: [0, 0, 0] } },
-            { t: 90, s: [115, 115, 100], e: [75, 75, 100], i: { x: [0.2, 0.2, 0.2], y: [1, 1, 1] }, o: { x: [0.4, 0.4, 0.4], y: [0, 0, 0] } },
-            { t: 180, s: [75, 75, 100] },
-          ],
-        },
-      },
-      ao: 0,
-      shapes: [
-        {
-          ty: 'gr',
-          it: [
-            {
-              ty: 'rc',
-              d: 1,
-              s: { a: 0, k: [36, 36] },
-              p: { a: 0, k: [0, 0] },
-              r: { a: 0, k: 8 },
-              nm: 'InnerDiamond',
-            },
-            {
-              ty: 'fl',
-              c: { a: 0, k: [1, 0.165, 0.522, 1] },
-              o: { a: 0, k: 85 },
-              nm: 'MagentaFill',
-            },
-            {
-              ty: 'tr',
-              p: { a: 0, k: [0, 0] },
-              a: { a: 0, k: [0, 0] },
-              s: { a: 0, k: [100, 100] },
-              r: { a: 0, k: 45 },
-              o: { a: 0, k: 100 },
-            },
-          ],
-          nm: 'CoreGroup',
-        },
-      ],
-      ip: 0,
-      op: 180,
-      st: 0,
-      bm: 0,
-    },
-    {
-      ddd: 0,
-      ind: 3,
-      ty: 4,
-      nm: 'AmbientOuterRing',
-      sr: 1,
-      ks: {
-        o: {
-          a: 1,
-          k: [
-            { t: 0, s: [35], e: [85], i: { x: [0.4], y: [1] }, o: { x: [0.4], y: [0] } },
-            { t: 90, s: [85], e: [35], i: { x: [0.4], y: [1] }, o: { x: [0.4], y: [0] } },
-            { t: 180, s: [35] },
-          ],
-        },
-        r: { a: 0, k: 0 },
-        p: { a: 0, k: [80, 80, 0] },
-        a: { a: 0, k: [0, 0, 0] },
-        s: {
-          a: 1,
-          k: [
-            { t: 0, s: [94, 94, 100], e: [106, 106, 100], i: { x: [0.4, 0.4, 0.4], y: [1, 1, 1] }, o: { x: [0.4, 0.4, 0.4], y: [0, 0, 0] } },
-            { t: 90, s: [106, 106, 100], e: [94, 94, 100], i: { x: [0.4, 0.4, 0.4], y: [1, 1, 1] }, o: { x: [0.4, 0.4, 0.4], y: [0, 0, 0] } },
-            { t: 180, s: [94, 94, 100] },
-          ],
-        },
-      },
-      ao: 0,
-      shapes: [
-        {
-          ty: 'gr',
-          it: [
-            {
-              ty: 'el',
-              d: 1,
-              s: { a: 0, k: [138, 138] },
-              p: { a: 0, k: [0, 0] },
-              nm: 'HaloCircle',
-            },
-            {
-              ty: 'st',
-              c: { a: 0, k: [0, 0.941, 1, 1] },
-              o: { a: 0, k: 75 },
-              w: { a: 0, k: 2 },
-              nm: 'CyanRing',
-            },
-            {
-              ty: 'tr',
-              p: { a: 0, k: [0, 0] },
-              a: { a: 0, k: [0, 0] },
-              s: { a: 0, k: [100, 100] },
-              r: { a: 0, k: 0 },
-              o: { a: 0, k: 100 },
-            },
-          ],
-          nm: 'HaloGroup',
-        },
-      ],
-      ip: 0,
-      op: 180,
-      st: 0,
-      bm: 0,
-    },
-  ],
-};
-
 export function CussCyberOrbLottie({ size = 48 }: { size?: number }) {
+  const spinOuter = useSharedValue(0);
+  const spinInner = useSharedValue(0);
+  const pulseInner = useSharedValue(0.85);
+  const breatheHalo = useSharedValue(0.94);
+
+  useEffect(() => {
+    spinOuter.value = 0;
+    spinOuter.value = withRepeat(
+      withTiming(360, { duration: 4200, easing: Easing.linear }),
+      -1,
+      false,
+    );
+
+    spinInner.value = 0;
+    spinInner.value = withRepeat(
+      withTiming(-360, { duration: 3200, easing: Easing.linear }),
+      -1,
+      false,
+    );
+
+    pulseInner.value = withRepeat(
+      withSequence(
+        withTiming(1.12, { duration: 900, easing: MOTION.easing.ambient }),
+        withTiming(0.82, { duration: 900, easing: MOTION.easing.ambient }),
+      ),
+      -1,
+      true,
+    );
+
+    breatheHalo.value = withRepeat(
+      withSequence(
+        withTiming(1.05, { duration: 1400, easing: MOTION.easing.ambient }),
+        withTiming(0.94, { duration: 1400, easing: MOTION.easing.ambient }),
+      ),
+      -1,
+      true,
+    );
+  }, []);
+
+  const outerStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${spinOuter.value}deg` }],
+  }));
+
+  const innerStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${spinInner.value}deg` }, { scale: pulseInner.value }],
+  }));
+
+  const haloStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: breatheHalo.value }],
+  }));
+
   return (
-    <View style={{ width: size, height: size }}>
-      <LottieView
-        source={CUSS_CORE_LOTTIE as any}
-        autoPlay
-        loop
-        style={{ width: size, height: size }}
-      />
+    <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+      {/* Layer 3 (Ambient): Breathing Cyan Outer Halo */}
+      <Animated.View style={[StyleSheet.absoluteFill, haloStyle]}>
+        <Svg width={size} height={size} viewBox="0 0 160 160">
+          <Circle
+            cx="80"
+            cy="80"
+            r="68"
+            stroke={COLORS.cyan}
+            strokeOpacity={0.75}
+            strokeWidth="3"
+            strokeDasharray="8 6"
+            fill="none"
+          />
+        </Svg>
+      </Animated.View>
+
+      {/* Layer 1 (Primary): Rotating 8-Point Acid-Lime Star Reticle */}
+      <Animated.View style={[StyleSheet.absoluteFill, outerStyle]}>
+        <Svg width={size} height={size} viewBox="0 0 160 160">
+          <Polygon
+            points="80,18 96,52 132,36 112,68 142,80 112,92 132,124 96,108 80,142 64,108 28,124 48,92 18,80 48,68 28,36 64,52"
+            stroke={COLORS.lime}
+            strokeWidth="3.5"
+            strokeLinejoin="round"
+            fill="none"
+          />
+        </Svg>
+      </Animated.View>
+
+      {/* Layer 2 (Secondary): Counter-Rotating Pulsing Magenta Inner Core */}
+      <Animated.View style={[StyleSheet.absoluteFill, innerStyle]}>
+        <Svg width={size} height={size} viewBox="0 0 160 160">
+          <Polygon
+            points="80,50 110,80 80,110 50,80"
+            fill={COLORS.magenta}
+            fillOpacity={0.85}
+            stroke={COLORS.lime}
+            strokeWidth="2.5"
+          />
+          <Circle cx="80" cy="80" r="8" fill={COLORS.lime} />
+        </Svg>
+      </Animated.View>
     </View>
   );
 }

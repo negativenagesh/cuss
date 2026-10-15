@@ -2,8 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, {
   Easing,
-  FadeInDown,
-  FadeOutUp,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
@@ -403,12 +401,7 @@ export default function MacRemoteKeyboard({ frontApp, focus, lastAck, send, requ
       </View>
 
       {/* P0 #1 focused-field echo + P3 #11 secure lock */}
-      <Animated.View
-        key={`${focus?.role}-${secure}-${focus?.trusted}`}
-        entering={FadeInDown.duration(MOTION.duration.card).easing(EXPO_OUT).springify().damping(18)}
-        exiting={FadeOutUp.duration(140)}
-        style={[s.echoCard, { borderColor: echoColor }]}
-      >
+      <View style={[s.echoCard, { borderColor: echoColor }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           {secure ? <Lock size={11} color={COLORS.magenta} /> : <CornerDownLeft size={11} color={echoColor} />}
           <Text style={[s.mono, { color: echoColor }]}>{roleLabel(focus)}</Text>
@@ -436,7 +429,7 @@ export default function MacRemoteKeyboard({ frontApp, focus, lastAck, send, requ
         ) : (
           <Text style={[s.echoText, { color: COLORS.dim }]}>No text field focused — tap a field on the mirror above, then type here.</Text>
         )}
-      </Animated.View>
+      </View>
 
       {/* Input row */}
       <View style={s.inputRow}>
