@@ -28,7 +28,7 @@ import {
   localProjects,
   localShowOnMac,
 } from '../api/client';
-import { useStore } from '../store';
+import { saveDeviceChatItems, useStore } from '../store';
 import { COLORS, FONTS, MODE_META } from '../theme';
 
 export default function CreateAgentScreen({ navigation, route }: any) {
@@ -103,9 +103,24 @@ export default function CreateAgentScreen({ navigation, route }: any) {
           });
         }
         if (agent) {
+          // Immediately persist the user's first message so AgentDetailScreen shows it at t=0ms
+          saveDeviceChatItems(agent.id, [
+            {
+              id: `usr-init-${Date.now()}`,
+              kind: 'user',
+              text: payload.text,
+              mode: payload.mode,
+              model: payload.model,
+              effort: payload.effort,
+              contextWindow: payload.context,
+              fast: payload.fast,
+              attachments: payload.attachments,
+            },
+          ]);
           navigation.replace('AgentDetail', {
-            agent: { ...agent, status: agent.lastStatus },
+            agent: { ...agent, status: 'running' },
             kind: 'mac',
+            initialPrompt: payload.text,
           });
           return;
         }
@@ -141,10 +156,7 @@ export default function CreateAgentScreen({ navigation, route }: any) {
     >
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={[
-          styles.scrollContent,
-          Platform.OS === 'android' && kbHeight > 0 ? { paddingBottom: kbHeight + 24 } : null,
-        ]}
+        contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.bannerCard}>
@@ -220,8 +232,6 @@ export default function CreateAgentScreen({ navigation, route }: any) {
           </>
         )}
 
-        <CussHazardStrip color={modeMeta.color} label="2. COMPOSER // MODE, MODEL & CONTEXT" />
-
         {busy ? (
           <CussSmallArtLoader
             variant="card"
@@ -234,15 +244,18 @@ export default function CreateAgentScreen({ navigation, route }: any) {
             accentColor={COLORS.lime}
           />
         ) : null}
+      </ScrollView>
 
+      {/* Pinned Bottom Chat Composer Box (always stays at the very bottom!) */}
+      <View style={styles.composerBottomPinned}>
         <CursorComposer
           cwd={isMac ? cwd : undefined}
           busy={busy}
           onSubmit={handleLaunch}
           submitLabel="LAUNCH"
-          minInputHeight={92}
+          minInputHeight={68}
         />
-      </ScrollView>
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -311,5 +324,13 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     color: COLORS.muted,
     marginTop: 1,
+  },
+  composerBottomPinned: {
+    paddingHorizontal: 10,
+    paddingTop: 6,
+    paddingBottom: Platform.OS === 'ios' ? 22 : 10,
+    backgroundColor: COLORS.bg,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
   },
 });

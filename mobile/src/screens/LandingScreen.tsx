@@ -284,6 +284,7 @@ export default function LandingScreen({ navigation }: any) {
   const [awaitingBrowserAuth, setAwaitingBrowserAuth] = useState(false);
   const [pendingLoginUrl, setPendingLoginUrl] = useState<string | undefined>(undefined);
   const [pkceSession, setPkceSession] = useState<{ uuid: string; verifier: string } | null>(null);
+  const [manualSignedOut, setManualSignedOut] = useState(false);
 
   // Choreographed Entrance (@motion-design 8-Step Checklist: MD3 Emphasized Decelerate + <400ms total stagger)
   const monolithOpacity = useSharedValue(0);
@@ -349,6 +350,9 @@ export default function LandingScreen({ navigation }: any) {
         const [auth, ide] = await Promise.allSettled([localAuthStatus(), localIdeState()]);
         if (auth.status === 'fulfilled' && auth.value?.email) {
           setDetectedMacEmail(auth.value.email);
+          if (!manualSignedOut) {
+            await setCursorSignedIn(true, auth.value.email);
+          }
         }
         if (ide.status === 'fulfilled' && ide.value) {
           setIdeState(ide.value);
@@ -364,6 +368,9 @@ export default function LandingScreen({ navigation }: any) {
           setLocalAgents(local.value.agents);
           if (local.value?.account?.email) {
             setDetectedMacEmail(local.value.account.email);
+            if (!manualSignedOut) {
+              await setCursorSignedIn(true, local.value.account.email);
+            }
           }
         }
         if (projs.status === 'fulfilled' && Array.isArray(projs.value?.projects)) {
@@ -373,6 +380,9 @@ export default function LandingScreen({ navigation }: any) {
           setModelCatalog(models.value.families, models.value.account?.email);
           if (models.value?.account?.email) {
             setDetectedMacEmail(models.value.account.email);
+            if (!manualSignedOut) {
+              await setCursorSignedIn(true, models.value.account.email);
+            }
           }
         }
         if (cloud.status === 'fulfilled' && Array.isArray(cloud.value?.agents)) {
@@ -469,6 +479,7 @@ export default function LandingScreen({ navigation }: any) {
         {
           text: 'Lock Phone Session',
           onPress: async () => {
+            setManualSignedOut(true);
             await setCursorSignedIn(false, null);
           },
         },
@@ -476,6 +487,7 @@ export default function LandingScreen({ navigation }: any) {
           text: 'Sign Out Everywhere',
           style: 'destructive',
           onPress: async () => {
+            setManualSignedOut(true);
             await setCursorSignedIn(false, null);
             setDetectedMacEmail(undefined);
             try {

@@ -112,6 +112,7 @@ export class LocalAgentService extends EventEmitter {
   private queues = new Map<string, QueuedTurn[]>();
   private recentEvents = new Map<string, RunEvent[]>();
   private cachedModels: { at: number; families: ModelFamily[]; rawModels: { slug: string; label: string }[] } | null = null;
+  private verifiedAccount: { email?: string; displayName?: string } = {};
   private loginProc: ChildProcess | null = null;
   private currentLoginUrl: string | undefined;
   private static readonly EVENT_BUFFER = 250;
@@ -225,6 +226,10 @@ export class LocalAgentService extends EventEmitter {
   ) {
     super();
     this.load();
+    // Warm verified account info on boot if using the real Cursor CLI
+    if (this.cliPath === CLI) {
+      void this.getAuthStatus().catch(() => {});
+    }
   }
 
   list(): LocalAgent[] {
@@ -259,18 +264,25 @@ export class LocalAgentService extends EventEmitter {
     return { deleted: existed, id };
   }
 
-  /** Read logged-in account metadata from ~/.cursor/cli-config.json if present. */
+  /** Read logged-in account metadata from ~/.cursor/cli-config.json or cached CLI status. */
   getAccountInfo(): { email?: string; displayName?: string } {
+    if (this.verifiedAccount.email) {
+      return this.verifiedAccount;
+    }
     try {
       if (!existsSync(CLI_CONFIG_PATH)) return {};
       const cfg = JSON.parse(readFileSync(CLI_CONFIG_PATH, 'utf8'));
-      return {
-        email: cfg?.authInfo?.email,
-        displayName: cfg?.authInfo?.displayName,
-      };
+      if (cfg?.authInfo?.email) {
+        this.verifiedAccount = {
+          email: cfg.authInfo.email,
+          displayName: cfg?.authInfo?.displayName,
+        };
+        return this.verifiedAccount;
+      }
     } catch {
-      return {};
+      /* ignore */
     }
+    return {};
   }
 
   /**
@@ -283,30 +295,21 @@ export class LocalAgentService extends EventEmitter {
     loginInProgress: boolean;
     loginUrl?: string;
   }> {
+    if (this.loginProc) {
+      return {
+        loggedIn: false,
+        loginInProgress: true,
+        loginUrl: this.currentLoginUrl,
+      };
+    }
+
     const info = this.getAccountInfo();
-    if (info.email && !this.loginProc) {
+    if (info.email) {
       return {
         loggedIn: true,
         email: info.email,
         displayName: info.displayName,
         loginInProgress: false,
-      };
-    }
-
-    if (this.loginProc) {
-      // Check if cli-config.json just got populated while loginProc was finishing
-      if (info.email) {
-        return {
-          loggedIn: true,
-          email: info.email,
-          displayName: info.displayName,
-          loginInProgress: false,
-        };
-      }
-      return {
-        loggedIn: false,
-        loginInProgress: true,
-        loginUrl: this.currentLoginUrl,
       };
     }
 
@@ -316,9 +319,11 @@ export class LocalAgentService extends EventEmitter {
       const clean = out.replace(/\x1b\[[0-9;]*m/g, '');
       const m = /Logged in as\s+([^\s\r\n]+)/i.exec(clean);
       if (m) {
+        const email = m[1].trim();
+        this.verifiedAccount = { email };
         return {
           loggedIn: true,
-          email: m[1].trim(),
+          email,
           loginInProgress: false,
         };
       }
@@ -344,13 +349,22 @@ export class LocalAgentService extends EventEmitter {
     loginUrl?: string;
   }> {
     const existing = this.getAccountInfo();
-    if (existing.email && !forceBrowser) {
-      return {
-        loggedIn: true,
-        email: existing.email,
-        displayName: existing.displayName,
-        loginInProgress: false,
-      };
+    if (!forceBrowser) {
+      try {
+        this.loginProc?.kill('SIGTERM');
+      } catch {
+        /* ignore */
+      }
+      this.loginProc = null;
+      this.currentLoginUrl = undefined;
+      if (existing.email) {
+        return {
+          loggedIn: true,
+          email: existing.email,
+          displayName: existing.displayName,
+          loginInProgress: false,
+        };
+      }
     }
 
     if (this.loginProc && this.currentLoginUrl) {
@@ -455,6 +469,7 @@ export class LocalAgentService extends EventEmitter {
     this.loginProc = null;
     this.currentLoginUrl = undefined;
     this.cachedModels = null;
+    this.verifiedAccount = {};
     try {
       await this.exec([...this.cmd('logout')], homedir());
     } catch {
@@ -977,7 +992,11 @@ print(output)
       ...(effectiveSpec ? ['--model', effectiveSpec] : []),
       cliPrompt,
     ];
-    const child = spawn(this.cliPath, args, { cwd: agent.cwd, env: RUN_ENV });
+    const child = spawn(this.cliPath, args, {
+      cwd: agent.cwd,
+      env: RUN_ENV,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     this.running.set(agent.id, child);
     this.touch(agent, 'running');
 
@@ -995,13 +1014,23 @@ print(output)
         } catch {
           /* non-JSON line: forward as text */
         }
-        if (parsed && typeof parsed === 'object' && parsed.type === 'result' && parsed.usage) {
-          agent.usage = {
-            inputTokens: Number(parsed.usage.inputTokens ?? 0),
-            outputTokens: Number(parsed.usage.outputTokens ?? 0),
-            cacheReadTokens: Number(parsed.usage.cacheReadTokens ?? 0),
-          };
-          this.save();
+        if (parsed && typeof parsed === 'object' && parsed.type === 'result') {
+          if (parsed.usage) {
+            agent.usage = {
+              inputTokens: Number(parsed.usage.inputTokens ?? 0),
+              outputTokens: Number(parsed.usage.outputTokens ?? 0),
+              cacheReadTokens: Number(parsed.usage.cacheReadTokens ?? 0),
+            };
+            this.save();
+          }
+          // Ensure CLI process exits promptly once final result JSON is emitted
+          setTimeout(() => {
+            try {
+              if (this.running.get(agent.id) === child) child.kill('SIGTERM');
+            } catch {
+              /* ignore */
+            }
+          }, 500);
         }
         const evt: RunEvent = { agentId: agent.id, raw: parsed, at: new Date().toISOString() };
         this.record(evt);
@@ -1031,31 +1060,65 @@ print(output)
   }
 
   private exec(args: string[], cwd: string): Promise<string> {
+    const singleLineCmd =
+      args.includes('create-chat') || args.includes('status') || args.includes('whoami');
     return new Promise((resolve, reject) => {
-      const p = spawn(this.cliPath, args, { cwd, env: CHILD_ENV });
+      let settled = false;
+      const p = spawn(this.cliPath, args, {
+        cwd,
+        env: CHILD_ENV,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
       let out = '';
       let err = '';
+      const finishOk = (val: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          p.kill('SIGTERM');
+        } catch {
+          /* ignore */
+        }
+        resolve(val);
+      };
       const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
         p.kill('SIGKILL');
+        if (out.trim().length > 0 && !looksLikeLogin(`${err}\n${out}`)) {
+          resolve(out);
+          return;
+        }
         reject(
           Object.assign(
             new Error(
-              'Cursor CLI did not answer in time. Run `cursor agent login` once on this Mac, then retry.',
+              'Cursor CLI timed out on Mac. Please retry.',
             ),
-            { code: 'cli_login_required' },
+            { code: looksLikeLogin(`${err}\n${out}`) ? 'cli_login_required' : 'cli_timeout' },
           ),
         );
       }, EXEC_TIMEOUT_MS);
-      p.stdout.on('data', (d) => (out += d));
-      p.stderr.on('data', (d) => (err += d));
+      p.stdout.on('data', (d) => {
+        out += d.toString('utf8');
+        // create-chat, status, and whoami emit a single line and may keep background sockets open; resolve immediately!
+        if (singleLineCmd && out.includes('\n') && out.trim().length > 0) {
+          finishOk(out);
+        }
+      });
+      p.stderr.on('data', (d) => (err += d.toString('utf8')));
       p.on('error', (e) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         reject(e);
       });
       p.on('exit', (code) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         const text = `${err}\n${out}`;
-        if (code === 0) return resolve(out);
+        if (code === 0 || (out.trim().length > 0 && !looksLikeLogin(text))) return resolve(out);
         if (looksLikeLogin(text)) {
           return reject(
             Object.assign(new Error('Cursor CLI is not logged in. Run `cursor agent login` once on this Mac.'), {

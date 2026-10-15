@@ -218,14 +218,34 @@ function upsertSingleTurnThinking(
 }
 
 export default function AgentDetailScreen({ route, navigation }: any) {
-  const { agent, kind } = route.params as { agent: Agent; kind: 'mac' | 'cloud' };
+  const { agent, kind, initialPrompt } = route.params as {
+    agent: Agent;
+    kind: 'mac' | 'cloud';
+    initialPrompt?: string;
+  };
   const isMac = kind === 'mac';
   const { setLocalAgents, renameLocalAgentOnDevice, deleteLocalAgentOnDevice } = useStore();
 
-  // Initialize chat items immediately from Android device storage
-  const [items, setItems] = useState<StreamItem[]>(() =>
-    loadDeviceChatItems<StreamItem>(agent.id),
-  );
+  // Initialize chat items immediately from Android device storage (or seed from initialPrompt if newly spawned)
+  const [items, setItems] = useState<StreamItem[]>(() => {
+    const saved = loadDeviceChatItems<StreamItem>(agent.id);
+    if (saved.length > 0) return saved;
+    if (initialPrompt?.trim()) {
+      return [
+        {
+          id: `usr-init-${Date.now()}`,
+          kind: 'user',
+          text: initialPrompt.trim(),
+          mode: agent.mode,
+          model: agent.model,
+          effort: agent.effort,
+          contextWindow: agent.contextWindow,
+          fast: agent.fast,
+        },
+      ];
+    }
+    return [];
+  });
   const [busy, setBusy] = useState(false);
   const [runStatus, setRunStatus] = useState<string>(agent.status ?? 'idle');
   const [inputTokens, setInputTokens] = useState<number>(agent.usage?.inputTokens ?? 0);
@@ -337,33 +357,41 @@ export default function AgentDetailScreen({ route, navigation }: any) {
 
   function ingestLocalEvent(r: any) {
     if (!r || typeof r !== 'object') return;
+    firstServerEventRef.current = false;
 
-    // When the bridge starts replaying its authoritative transcript, reset once so we don't duplicate device-cached items
-    if (firstServerEventRef.current) {
-      firstServerEventRef.current = false;
-      assistantDeltaRef.current = '';
-      setItems([]);
-    }
-
-    if (r.type === 'cuss_user_turn') {
+    if (r.type === 'cuss_user_turn' || r.type === 'user') {
       setRunStatus('running');
       assistantDeltaRef.current = '';
       if (r.attachments?.files?.length) {
         setSessionFiles((prev) => Array.from(new Set([...prev, ...r.attachments.files])));
       }
-      const turnText = String(r.text ?? '');
+      const rawUserText =
+        r.type === 'cuss_user_turn'
+          ? String(r.text ?? '')
+          : (r.message?.content ?? [])
+              .filter((c: any) => c?.type === 'text')
+              .map((c: any) => String(c.text ?? ''))
+              .join('\n');
+      // Strip synthetic [MODE: ...] / [ATTACHED FILES ...] prefix if present on raw CLI user event
+      const turnText = rawUserText.replace(/^(?:\[[\s\S]*?\]\s*)+/, '').trim() || rawUserText.trim();
+      if (!turnText) return;
+
       setItems((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && last.kind === 'user' && last.text.trim() === turnText.trim()) {
+        // Deduplicate if this user message is already present in the current or recent turn
+        const existingIdx = prev.findIndex(
+          (it) => it.kind === 'user' && it.text.trim() === turnText.trim(),
+        );
+        if (existingIdx >= 0) {
+          const existing = prev[existingIdx] as Extract<StreamItem, { kind: 'user' }>;
           const copy = [...prev];
-          copy[copy.length - 1] = {
-            ...last,
-            mode: r.mode ?? last.mode,
-            model: r.model ?? last.model,
-            effort: r.effort ?? last.effort,
-            contextWindow: r.contextWindow ?? last.contextWindow,
-            fast: r.fast ?? last.fast,
-            attachments: r.attachments ?? last.attachments,
+          copy[existingIdx] = {
+            ...existing,
+            mode: r.mode ?? existing.mode,
+            model: r.model ?? existing.model,
+            effort: r.effort ?? existing.effort,
+            contextWindow: r.contextWindow ?? existing.contextWindow,
+            fast: r.fast ?? existing.fast,
+            attachments: r.attachments ?? existing.attachments,
           };
           return copy;
         }
@@ -1126,15 +1154,8 @@ export default function AgentDetailScreen({ route, navigation }: any) {
         ) : null}
       </View>
 
-      {/* Bottom Keyboard-Aware Aesthetic Composer Dock */}
-      <View
-        style={[
-          styles.composerContainer,
-          Platform.OS === 'android' && kbHeight > 0
-            ? { marginBottom: kbHeight + 6 }
-            : null,
-        ]}
-      >
+      {/* Bottom Pinned Composer Dock (always stays at the very bottom!) */}
+      <View style={styles.composerContainer}>
         <CursorComposer
           cwd={agent.cwd}
           busy={busy}
