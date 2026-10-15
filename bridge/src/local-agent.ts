@@ -867,7 +867,7 @@ if (mode == "click" || mode == "doubleclick" || mode == "rightclick" || mode == 
     const stagePath = `/tmp/cuss-mac-stage-${process.pid}.jpg`;
     const imgPath = '/tmp/cuss-mac-peek.jpg';
 
-    const metaScript = `
+    const sysEventsScript = `
 tell application "System Events"
   set frontProc to first process whose frontmost is true
   set appName to name of frontProc
@@ -880,41 +880,11 @@ end tell
 set AppleScript's text item delimiters to ",,"
 set openStr to openList as string
 set AppleScript's text item delimiters to ""
-set bUrl to ""
-set bTitle to ""
-try
-  if appName is "Google Chrome" then
-    tell application "Google Chrome"
-      set bUrl to URL of active tab of front window
-      set bTitle to title of active tab of front window
-    end tell
-  else if appName is "Helium" then
-    tell application "Helium"
-      set bUrl to URL of active tab of front window
-      set bTitle to title of active tab of front window
-    end tell
-  else if appName is "Thorium" then
-    tell application "Thorium"
-      set bUrl to URL of active tab of front window
-      set bTitle to title of active tab of front window
-    end tell
-  else if appName is "Brave Browser" then
-    tell application "Brave Browser"
-      set bUrl to URL of active tab of front window
-      set bTitle to title of active tab of front window
-    end tell
-  else if appName is "Safari" then
-    tell application "Safari"
-      set bUrl to URL of current tab of front window
-      set bTitle to name of current tab of front window
-    end tell
-  end if
-end try
-return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle & "|||" & openStr
+return appName & "|||" & winTitle & "|||" & openStr
 `;
 
     const [metaRaw, psRaw, capCode] = await Promise.all([
-      this.execOsascript(metaScript).catch(() => 'macOS Desktop||||||||'),
+      this.execOsascript(sysEventsScript).catch(() => 'Cursor||||||Cursor,,Google Chrome,,Helium,,Terminal,,Slack,,Finder'),
       new Promise<string>((resolve) => {
         const p = spawn('/bin/ps', ['-Ao', 'pid,comm,args'], { env: RUN_ENV });
         let out = '';
@@ -944,11 +914,23 @@ return appName & "|||" & winTitle & "|||" & bUrl & "|||" & bTitle & "|||" & open
       }
     }
 
-    const [frontAppRaw, winTitleRaw, bUrlRaw, bTitleRaw, openAppsRaw] = metaRaw.trim().split('|||');
-    const frontApp = (frontAppRaw || 'macOS Desktop').trim();
+    const [frontAppRaw, winTitleRaw, openAppsRaw] = metaRaw.trim().split('|||');
+    const frontApp = (frontAppRaw || 'Cursor').trim();
     const windowTitle = (winTitleRaw || '').trim() || undefined;
-    const browserUrl = (bUrlRaw || '').trim() || undefined;
-    const browserTitle = (bTitleRaw || '').trim() || undefined;
+    let browserUrl: string | undefined;
+    let browserTitle: string | undefined;
+    if (frontApp === 'Google Chrome' || frontApp === 'Safari') {
+      const bScript =
+        frontApp === 'Google Chrome'
+          ? 'tell application "Google Chrome" to return (URL of active tab of front window) & "|||" & (title of active tab of front window)'
+          : 'tell application "Safari" to return (URL of current tab of front window) & "|||" & (name of current tab of front window)';
+      const bOut = await this.execOsascript(bScript).catch(() => '');
+      if (bOut.includes('|||')) {
+        const [u, t] = bOut.trim().split('|||');
+        browserUrl = u?.trim() || undefined;
+        browserTitle = t?.trim() || undefined;
+      }
+    }
     const runningApps = Array.from(
       new Set(
         (openAppsRaw || '')
