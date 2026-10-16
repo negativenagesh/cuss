@@ -391,6 +391,47 @@ export class LocalAgentService extends EventEmitter {
     return { deleted: existed, id };
   }
 
+  /**
+   * Merge agents and transcripts created directly on the phone while the Mac was shut down / offline.
+   */
+  syncFromDevice(
+    incomingAgents: LocalAgent[],
+    transcripts?: Record<string, RunEvent[]>,
+  ): { synced: number; agents: LocalAgent[] } {
+    let synced = 0;
+    if (Array.isArray(incomingAgents)) {
+      for (const ag of incomingAgents) {
+        if (!ag?.id || this.deletedIds.has(ag.id)) continue;
+        const existing = this.agents.get(ag.id);
+        if (
+          !existing ||
+          String(ag.lastActivityAt ?? '') > String(existing.lastActivityAt ?? '')
+        ) {
+          this.agents.set(ag.id, {
+            ...existing,
+            ...ag,
+            lastStatus: ag.lastStatus === 'running' ? 'done' : ag.lastStatus,
+          });
+          synced++;
+        }
+      }
+    }
+    if (transcripts && typeof transcripts === 'object') {
+      for (const [id, evts] of Object.entries(transcripts)) {
+        if (!Array.isArray(evts) || evts.length === 0) continue;
+        const current = this.recentEvents.get(id) ?? [];
+        if (evts.length >= current.length) {
+          this.recentEvents.set(id, evts.slice(-LocalAgentService.EVENT_BUFFER));
+        }
+      }
+    }
+    if (synced > 0) {
+      this.save();
+      this.emit('changed', this.list());
+    }
+    return { synced, agents: this.list() };
+  }
+
   /** Read logged-in account metadata from ~/.cursor/cli-config.json or cached CLI status. */
   getAccountInfo(): { email?: string; displayName?: string } {
     if (this.verifiedAccount.email) {

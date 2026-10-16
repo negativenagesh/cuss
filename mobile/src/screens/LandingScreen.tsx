@@ -274,6 +274,8 @@ export default function LandingScreen({ navigation }: any) {
     accountEmail,
     cursorSignedIn,
     setCursorSignedIn,
+    saveCursorTokens,
+    connectionMode,
     ideState,
     setIdeState,
     setModelCatalog,
@@ -416,8 +418,12 @@ export default function LandingScreen({ navigation }: any) {
           if (res.ok) {
             const data = await res.json();
             if (data?.accessToken) {
-              // Push the mobile-acquired OAuth tokens directly to the Mac bridge (`~/.cursor/auth.json`)
-              // so the Mac CLI is authenticated 100% headlessly without ever opening Mac Terminal!
+              // Save the mobile-acquired OAuth tokens directly on the phone AND push to Mac bridge (`~/.cursor/auth.json`)
+              await saveCursorTokens(
+                String(data.accessToken),
+                data.refreshToken ? String(data.refreshToken) : undefined,
+                detectedMacEmail || accountEmail,
+              );
               const bridgeComplete = await localAuthComplete({
                 accessToken: String(data.accessToken),
                 refreshToken: data.refreshToken ? String(data.refreshToken) : undefined,
@@ -568,10 +574,22 @@ export default function LandingScreen({ navigation }: any) {
           <Text
             style={[
               styles.onlineText,
-              { color: cursorSignedIn ? COLORS.lime : COLORS.amber },
+              {
+                color: !cursorSignedIn
+                  ? COLORS.amber
+                  : connectionMode === 'autonomous-cloud'
+                    ? COLORS.cyan
+                    : COLORS.lime,
+              },
             ]}
           >
-            {cursorSignedIn ? 'CURSOR // SIGNED IN' : 'CURSOR // AUTH REQUIRED'}
+            {!cursorSignedIn
+              ? 'CURSOR // AUTH REQUIRED'
+              : connectionMode === 'autonomous-cloud'
+                ? 'CLOUD DIRECT // MAC OFFLINE'
+                : connectionMode === 'tunnel'
+                  ? 'WORLDWIDE TUNNEL // LIVE'
+                  : 'CURSOR // SIGNED IN'}
           </Text>
         </View>
 

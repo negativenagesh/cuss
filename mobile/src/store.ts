@@ -73,7 +73,13 @@ function normalizeBridgeOrigin(input: string): string | null {
  */
 export function parsePairingInput(
   rawInput: string | null | undefined,
-): { bridgeUrl: string; token?: string } | null {
+): {
+  bridgeUrl: string;
+  token?: string;
+  tunnelUrl?: string;
+  lanUrl?: string;
+  cursorAccessToken?: string;
+} | null {
   const raw = String(rawInput ?? '').trim();
   if (!raw) return null;
 
@@ -81,9 +87,12 @@ export function parsePairingInput(
   if (raw.startsWith('{') && raw.endsWith('}')) {
     try {
       const obj = JSON.parse(raw);
-      const u = normalizeBridgeOrigin(obj?.url ?? obj?.bridgeUrl ?? '');
+      const u = normalizeBridgeOrigin(obj?.url ?? obj?.bridgeUrl ?? obj?.tunnelUrl ?? '');
       const t = typeof obj?.token === 'string' && obj.token.trim() ? obj.token.trim() : undefined;
-      if (u) return { bridgeUrl: u, token: t };
+      const tun = typeof obj?.tunnelUrl === 'string' ? normalizeBridgeOrigin(obj.tunnelUrl) ?? undefined : undefined;
+      const lan = typeof obj?.lanUrl === 'string' ? normalizeBridgeOrigin(obj.lanUrl) ?? undefined : undefined;
+      const cat = typeof obj?.cursorAccessToken === 'string' ? obj.cursorAccessToken.trim() : undefined;
+      if (u) return { bridgeUrl: u, token: t, tunnelUrl: tun, lanUrl: lan, cursorAccessToken: cat };
     } catch {
       /* continue */
     }
@@ -105,13 +114,22 @@ export function parsePairingInput(
   }
 
   const tokenFromQuery = params.token || params.pairingToken || undefined;
+  const tunnelFromQuery = params.tunnel ? normalizeBridgeOrigin(safeDecodeURIComponent(params.tunnel)) ?? undefined : undefined;
+  const lanFromQuery = params.lan ? normalizeBridgeOrigin(safeDecodeURIComponent(params.lan)) ?? undefined : undefined;
+  const cursorTokenFromQuery = params.cursorToken || undefined;
 
   // 2. Explicit ?url= parameter (e.g. missioncontrol://pair?url=...&token=... or exp://.../--/pair?url=...)
   if (params.url) {
     const decodedUrl = safeDecodeURIComponent(params.url);
     const origin = normalizeBridgeOrigin(decodedUrl);
     if (origin) {
-      return { bridgeUrl: origin, token: tokenFromQuery };
+      return {
+        bridgeUrl: origin,
+        token: tokenFromQuery,
+        tunnelUrl: tunnelFromQuery || (origin.startsWith('https://') ? origin : undefined),
+        lanUrl: lanFromQuery || (origin.startsWith('http://') ? origin : undefined),
+        cursorAccessToken: cursorTokenFromQuery,
+      };
     }
   }
 
@@ -128,15 +146,24 @@ export function parsePairingInput(
       return {
         bridgeUrl: `http://${hostPart}:4040`,
         token: tokenFromQuery,
+        tunnelUrl: tunnelFromQuery,
+        lanUrl: `http://${hostPart}:4040`,
+        cursorAccessToken: cursorTokenFromQuery,
       };
     }
   }
 
-  // 4. HTTP / HTTPS URL (`http://10.10.0.132:4040/api/pair?token=...` or `http://10.10.0.132:4040`)
+  // 4. HTTP / HTTPS URL (`http://10.10.0.132:4040/api/pair?token=...` or `https://xyz.lhr.life`)
   if (/^https?:\/\//i.test(raw)) {
     const origin = normalizeBridgeOrigin(raw);
     if (origin) {
-      return { bridgeUrl: origin, token: tokenFromQuery };
+      return {
+        bridgeUrl: origin,
+        token: tokenFromQuery,
+        tunnelUrl: tunnelFromQuery || (origin.startsWith('https://') ? origin : undefined),
+        lanUrl: lanFromQuery || (origin.startsWith('http://') ? origin : undefined),
+        cursorAccessToken: cursorTokenFromQuery,
+      };
     }
   }
 
@@ -152,51 +179,73 @@ export function parsePairingInput(
 }
 
 /**
- * Probes candidate Mac Bridge URL(s), resolves the pairing token automatically via `/api/auto-pair`
- * when not explicitly provided (e.g. when scanning an Expo Go QR or clicking Auto-Pair),
- * and verifies that the bridge is healthy.
+ * Probes candidate Mac Bridge URL(s) (LAN, Worldwide HTTPS Tunnel, Tailscale),
+ * resolves the pairing token automatically via `/api/auto-pair`, caches the Mac's
+ * Worldwide Tunnel URL & Cursor OAuth credentials on the phone, and falls back to
+ * Autonomous Direct Cloud mode if the Mac is shut down!
  */
 export async function resolveAndVerifyPairing(
   candidateUrl?: string | null,
   candidateToken?: string | null,
+  extra?: { tunnelUrl?: string | null; lanUrl?: string | null; cursorAccessToken?: string | null },
 ): Promise<{
   ok: boolean;
   bridgeUrl?: string;
   token?: string;
   message: string;
 }> {
+  const state = useStore.getState();
   const candidates: string[] = [];
-  const primary = candidateUrl ? normalizeBridgeOrigin(candidateUrl) : null;
-  if (primary) candidates.push(primary);
-  const liveDetected = detectLiveMacBridgeUrl();
-  if (liveDetected && !candidates.includes(liveDetected)) {
-    candidates.push(liveDetected);
-  }
+  const addCandidate = (u?: string | null) => {
+    if (!u) return;
+    const norm = normalizeBridgeOrigin(u);
+    if (norm && !candidates.includes(norm)) candidates.push(norm);
+  };
 
-  if (candidates.length === 0) {
-    return {
-      ok: false,
-      message: 'No Mac Bridge address provided. Scan the Mac QR code or enter http://<MAC_IP>:4040.',
-    };
-  }
+  addCandidate(candidateUrl);
+  addCandidate(extra?.tunnelUrl);
+  addCandidate(extra?.lanUrl);
+  addCandidate(detectLiveMacBridgeUrl());
+  addCandidate(state.tunnelUrl);
+  addCandidate(state.tailscaleUrl);
+  addCandidate(state.lanUrl);
+  addCandidate(state.bridgeUrl);
 
-  const cleanInitialToken = candidateToken ? String(candidateToken).trim() : '';
+  const cleanInitialToken = (candidateToken ? String(candidateToken).trim() : '') || state.token || '';
+
+  if (extra?.cursorAccessToken) {
+    await state.saveCursorTokens(extra.cursorAccessToken);
+  }
 
   for (const base of candidates) {
     try {
       const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 5000);
+      const timer = setTimeout(() => ac.abort(), 4500);
       const res = await fetch(`${base}/api/auto-pair`, { signal: ac.signal });
       clearTimeout(timer);
       if (res.ok) {
         const j = await res.json();
         const resolvedToken = cleanInitialToken || (j?.token ? String(j.token).trim() : '');
         if (j?.ok && resolvedToken) {
+          const isTunnel = base.startsWith('https://');
+          state.setConnectionEndpoints({
+            tunnelUrl: j?.tunnelUrl || extra?.tunnelUrl || (isTunnel ? base : state.tunnelUrl),
+            tailscaleUrl: j?.tailscaleUrl || state.tailscaleUrl,
+            lanUrl: j?.lanUrl || extra?.lanUrl || (!isTunnel ? base : state.lanUrl),
+            connectionMode: isTunnel ? 'tunnel' : 'lan',
+          });
+          if (j?.cursorAuth?.accessToken) {
+            await state.saveCursorTokens(
+              j.cursorAuth.accessToken,
+              j.cursorAuth.refreshToken,
+              j.cursorAuth.email,
+            );
+          }
           return {
             ok: true,
             bridgeUrl: base,
             token: resolvedToken,
-            message: `LINK ESTABLISHED // BRIDGE v${j.version ?? '0.5.0'} (${base.replace(/^https?:\/\//, '')})`,
+            message: `LINK ESTABLISHED // ${isTunnel ? 'WORLDWIDE TUNNEL' : 'MAC BRIDGE'} v${j.version ?? '0.6.0'} (${base.replace(/^https?:\/\//, '')})`,
           };
         }
       }
@@ -206,17 +255,24 @@ export async function resolveAndVerifyPairing(
 
     try {
       const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 5000);
+      const timer = setTimeout(() => ac.abort(), 4500);
       const res = await fetch(`${base}/api/health`, { signal: ac.signal });
       clearTimeout(timer);
       if (res.ok) {
         const j = await res.json();
         if (j?.ok && cleanInitialToken) {
+          const isTunnel = base.startsWith('https://');
+          state.setConnectionEndpoints({
+            tunnelUrl: j?.tunnelUrl || extra?.tunnelUrl || (isTunnel ? base : state.tunnelUrl),
+            tailscaleUrl: j?.tailscaleUrl || state.tailscaleUrl,
+            lanUrl: j?.lanUrl || extra?.lanUrl || (!isTunnel ? base : state.lanUrl),
+            connectionMode: isTunnel ? 'tunnel' : 'lan',
+          });
           return {
             ok: true,
             bridgeUrl: base,
             token: cleanInitialToken,
-            message: `LINK ESTABLISHED // BRIDGE v${j.version ?? '0.5.0'} (${base.replace(/^https?:\/\//, '')})`,
+            message: `LINK ESTABLISHED // ${isTunnel ? 'WORLDWIDE TUNNEL' : 'MAC BRIDGE'} v${j.version ?? '0.6.0'} (${base.replace(/^https?:\/\//, '')})`,
           };
         }
       }
@@ -225,9 +281,25 @@ export async function resolveAndVerifyPairing(
     }
   }
 
+  // If the Mac is shut down / offline, but we have a pairing token (or QR credentials),
+  // lock the pairing credentials anyway so Autonomous Direct Cloud (`api2.cursor.sh`) works immediately!
+  if (cleanInitialToken && candidates.length > 0) {
+    state.setConnectionEndpoints({
+      tunnelUrl: extra?.tunnelUrl ?? state.tunnelUrl,
+      lanUrl: extra?.lanUrl ?? candidates[0],
+      connectionMode: 'autonomous-cloud',
+    });
+    return {
+      ok: true,
+      bridgeUrl: extra?.tunnelUrl || candidates[0],
+      token: cleanInitialToken,
+      message: 'PAIRED IN AUTONOMOUS CLOUD MODE (Mac offline — using direct Cursor Cloud engine)',
+    };
+  }
+
   return {
     ok: false,
-    message: `Cannot reach Mac bridge at ${candidates[0]} (check same Wi-Fi / Tailscale IP / port 4040)`,
+    message: `Cannot reach Mac bridge at ${candidates[0] || 'unknown'} (check Wi-Fi or Worldwide Tunnel QR)`,
   };
 }
 
@@ -501,6 +573,11 @@ interface DeviceStateSnapshot {
   macSnippets?: string[];
   macEnterPolicies?: Record<string, MacEnterPolicy>;
   selectedCwd?: string | null;
+  tunnelUrl?: string | null;
+  tailscaleUrl?: string | null;
+  lanUrl?: string | null;
+  cursorAccessToken?: string | null;
+  cursorRefreshToken?: string | null;
 }
 
 /** How the phone's Enter key is delivered to a given Mac app in LIVE KEYBOARD mode. */
@@ -579,9 +656,17 @@ export interface AgentCompletionNotice {
   at: string;
 }
 
+export type UmbilicalConnectionMode = 'lan' | 'tunnel' | 'autonomous-cloud';
+
 interface State {
   bridgeUrl: string | null;
   token: string | null;
+  tunnelUrl: string | null;
+  tailscaleUrl: string | null;
+  lanUrl: string | null;
+  cursorAccessToken: string | null;
+  cursorRefreshToken: string | null;
+  connectionMode: UmbilicalConnectionMode;
   agents: Agent[];
   localAgents: LocalAgent[];
   deletedChatIds: string[];
@@ -606,6 +691,17 @@ interface State {
   removeMacSnippet: (text: string) => void;
   setMacEnterPolicy: (app: string, policy: MacEnterPolicy) => void;
   setPairing: (url: string, token: string) => Promise<void>;
+  setConnectionEndpoints: (patch: {
+    tunnelUrl?: string | null;
+    tailscaleUrl?: string | null;
+    lanUrl?: string | null;
+    connectionMode?: UmbilicalConnectionMode;
+  }) => void;
+  saveCursorTokens: (
+    accessToken: string,
+    refreshToken?: string | null,
+    email?: string | null,
+  ) => Promise<void>;
   clearPairing: () => Promise<void>;
   setCursorSignedIn: (signedIn: boolean, email?: string | null) => Promise<void>;
   hydrate: () => Promise<void>;
@@ -631,6 +727,12 @@ interface State {
 export const useStore = create<State>((set, get) => ({
   bridgeUrl: null,
   token: null,
+  tunnelUrl: null,
+  tailscaleUrl: null,
+  lanUrl: null,
+  cursorAccessToken: null,
+  cursorRefreshToken: null,
+  connectionMode: 'lan',
   agents: [],
   localAgents: [],
   deletedChatIds: [],
@@ -675,7 +777,62 @@ export const useStore = create<State>((set, get) => ({
   async setPairing(bridgeUrl, token) {
     await SecureStore.setItemAsync('bridgeUrl', bridgeUrl);
     await SecureStore.setItemAsync('pairingToken', token);
-    set({ bridgeUrl, token });
+    const isTunnel = bridgeUrl.startsWith('https://');
+    const nextTunnel = isTunnel ? bridgeUrl : get().tunnelUrl;
+    const nextLan = !isTunnel ? bridgeUrl : get().lanUrl;
+    writeDeviceStateSnapshot({
+      tunnelUrl: nextTunnel,
+      lanUrl: nextLan,
+    });
+    set({
+      bridgeUrl,
+      token,
+      tunnelUrl: nextTunnel,
+      lanUrl: nextLan,
+      connectionMode: isTunnel ? 'tunnel' : get().connectionMode,
+    });
+  },
+  setConnectionEndpoints: (patch) => {
+    const nextTunnel = patch.tunnelUrl !== undefined ? patch.tunnelUrl : get().tunnelUrl;
+    const nextTailscale = patch.tailscaleUrl !== undefined ? patch.tailscaleUrl : get().tailscaleUrl;
+    const nextLan = patch.lanUrl !== undefined ? patch.lanUrl : get().lanUrl;
+    const nextMode = patch.connectionMode ?? get().connectionMode;
+    writeDeviceStateSnapshot({
+      tunnelUrl: nextTunnel,
+      tailscaleUrl: nextTailscale,
+      lanUrl: nextLan,
+    });
+    set({
+      tunnelUrl: nextTunnel,
+      tailscaleUrl: nextTailscale,
+      lanUrl: nextLan,
+      connectionMode: nextMode,
+    });
+  },
+  async saveCursorTokens(accessToken, refreshToken, email) {
+    const cleanAccess = String(accessToken ?? '').trim();
+    if (!cleanAccess) return;
+    const cleanRefresh = refreshToken ? String(refreshToken).trim() : get().cursorRefreshToken;
+    const nextEmail = email ?? get().accountEmail;
+    try {
+      await SecureStore.setItemAsync('cursorAccessToken', cleanAccess);
+      if (cleanRefresh) await SecureStore.setItemAsync('cursorRefreshToken', cleanRefresh);
+      await SecureStore.setItemAsync('cursorSignedIn', '1');
+    } catch {
+      /* ignore securestore limits */
+    }
+    writeDeviceStateSnapshot({
+      cursorAccessToken: cleanAccess,
+      cursorRefreshToken: cleanRefresh,
+      cursorSignedIn: true,
+      accountEmail: nextEmail,
+    });
+    set({
+      cursorAccessToken: cleanAccess,
+      cursorRefreshToken: cleanRefresh,
+      cursorSignedIn: true,
+      accountEmail: nextEmail,
+    });
   },
   async clearPairing() {
     await SecureStore.deleteItemAsync('bridgeUrl');
@@ -695,39 +852,76 @@ export const useStore = create<State>((set, get) => ({
   async hydrate() {
     let bridgeUrl = await SecureStore.getItemAsync('bridgeUrl');
     let token = await SecureStore.getItemAsync('pairingToken');
+    const savedAccess = await SecureStore.getItemAsync('cursorAccessToken').catch(() => null);
+    const savedRefresh = await SecureStore.getItemAsync('cursorRefreshToken').catch(() => null);
+    const snap = readDeviceStateSnapshot();
     const detectedUrl = detectLiveMacBridgeUrl();
+    let tunnelUrl = snap.tunnelUrl ?? null;
+    let tailscaleUrl = snap.tailscaleUrl ?? null;
+    let lanUrl = snap.lanUrl ?? null;
+    let cursorAccessToken = savedAccess || snap.cursorAccessToken || null;
+    let cursorRefreshToken = savedRefresh || snap.cursorRefreshToken || null;
 
     // If the Mac's Wi-Fi IP changed (e.g. 192.168.1.10 -> 10.10.0.160), auto-switch immediately!
     if (detectedUrl && (!bridgeUrl || (isPrivateLanUrl(bridgeUrl) && bridgeUrl !== detectedUrl))) {
       bridgeUrl = detectedUrl;
+      lanUrl = detectedUrl;
       await SecureStore.setItemAsync('bridgeUrl', bridgeUrl);
     }
 
-    // Auto-pair over same Wi-Fi if token is not yet saved
-    if (bridgeUrl && !token) {
+    // Auto-pair over same Wi-Fi if token is not yet saved (or refresh tunnel & cursorAuth on boot)
+    if (bridgeUrl) {
       try {
         const ac = new AbortController();
-        const t = setTimeout(() => ac.abort(), 2500);
+        const t = setTimeout(() => ac.abort(), 2200);
         const res = await fetch(`${bridgeUrl}/api/auto-pair`, { signal: ac.signal });
         clearTimeout(t);
         if (res.ok) {
           const j = await res.json();
-          if (j?.token) {
+          if (!token && j?.token) {
             token = String(j.token);
             await SecureStore.setItemAsync('pairingToken', token);
           }
+          if (j?.tunnelUrl) tunnelUrl = String(j.tunnelUrl);
+          if (j?.tailscaleUrl) tailscaleUrl = String(j.tailscaleUrl);
+          if (j?.lanUrl) lanUrl = String(j.lanUrl);
+          if (j?.cursorAuth?.accessToken) {
+            cursorAccessToken = String(j.cursorAuth.accessToken);
+            cursorRefreshToken = j.cursorAuth.refreshToken
+              ? String(j.cursorAuth.refreshToken)
+              : cursorRefreshToken;
+            try {
+              await SecureStore.setItemAsync('cursorAccessToken', cursorAccessToken);
+              await SecureStore.setItemAsync('cursorSignedIn', '1');
+            } catch {
+              /* ignore */
+            }
+          }
+          writeDeviceStateSnapshot({
+            tunnelUrl,
+            tailscaleUrl,
+            lanUrl,
+            cursorAccessToken,
+            cursorRefreshToken,
+          });
         }
       } catch {
-        /* manual or QR pairing remains available */
+        /* If LAN is unreachable on boot, client.ts will heal via Worldwide Tunnel or Autonomous Cloud */
       }
     }
 
     const secureSigned = await SecureStore.getItemAsync('cursorSignedIn');
-    const snap = readDeviceStateSnapshot();
-    const cursorSignedIn = secureSigned === '1' || Boolean(snap.cursorSignedIn);
+    const cursorSignedIn =
+      secureSigned === '1' || Boolean(snap.cursorSignedIn) || Boolean(cursorAccessToken);
     set({
       bridgeUrl,
       token,
+      tunnelUrl,
+      tailscaleUrl,
+      lanUrl,
+      cursorAccessToken,
+      cursorRefreshToken,
+      connectionMode: bridgeUrl?.startsWith('https://') ? 'tunnel' : 'lan',
       localAgents: Array.isArray(snap.localAgents) ? snap.localAgents : [],
       agents: Array.isArray(snap.agents) ? snap.agents : [],
       projects: Array.isArray(snap.projects) ? snap.projects : [],
@@ -736,7 +930,10 @@ export const useStore = create<State>((set, get) => ({
       deletedChatIds: Array.isArray(snap.deletedChatIds) ? snap.deletedChatIds : [],
       selectedCwd: snap.selectedCwd ?? null,
       macSnippets: Array.isArray(snap.macSnippets) ? snap.macSnippets : [],
-      macEnterPolicies: snap.macEnterPolicies && typeof snap.macEnterPolicies === 'object' ? snap.macEnterPolicies : {},
+      macEnterPolicies:
+        snap.macEnterPolicies && typeof snap.macEnterPolicies === 'object'
+          ? snap.macEnterPolicies
+          : {},
       hydrated: true,
     });
   },

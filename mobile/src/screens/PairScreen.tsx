@@ -52,14 +52,18 @@ export default function PairScreen({ navigation }: any) {
   const lastInvalidScanRef = useRef<{ raw: string; at: number }>({ raw: '', at: 0 });
 
   const connectWithCredentials = useCallback(
-    async (candidateUrl?: string | null, candidateToken?: string | null) => {
+    async (
+      candidateUrl?: string | null,
+      candidateToken?: string | null,
+      extra?: { tunnelUrl?: string | null; lanUrl?: string | null; cursorAccessToken?: string | null },
+    ) => {
       if (scanLockRef.current) return;
       scanLockRef.current = true;
       setChecking(true);
       setStatus({ ok: true, text: 'PROBING MAC UMBILICAL & VERIFYING HANDSHAKE…' });
 
       try {
-        const res = await resolveAndVerifyPairing(candidateUrl, candidateToken);
+        const res = await resolveAndVerifyPairing(candidateUrl, candidateToken, extra);
         setChecking(false);
         if (!res.ok || !res.bridgeUrl || !res.token) {
           setStatus({ ok: false, text: res.message });
@@ -128,7 +132,11 @@ export default function PairScreen({ navigation }: any) {
         return;
       }
 
-      await connectWithCredentials(parsed.bridgeUrl, parsed.token);
+      await connectWithCredentials(parsed.bridgeUrl, parsed.token, {
+        tunnelUrl: parsed.tunnelUrl,
+        lanUrl: parsed.lanUrl,
+        cursorAccessToken: parsed.cursorAccessToken,
+      });
     },
     [connectWithCredentials],
   );

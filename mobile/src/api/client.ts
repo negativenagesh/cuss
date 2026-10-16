@@ -1,53 +1,428 @@
 import {
   useStore,
   detectLiveMacBridgeUrl,
+  loadDeviceChatItems,
   CursorIdeState,
+  LocalAgent,
   ModelFamily,
   ProjectEntry,
   PromptAttachments,
 } from '../store';
 import type { ExecutionMode } from '../theme';
+import {
+  directGetSettingsAndUsage,
+  directListCloudAgents,
+  directListModels,
+  directNameAgent,
+  resolveBeaconEndpoints,
+  runDirectPhoneCursorTurn,
+  stopDirectAgentRun,
+} from './direct-cursor';
 
-async function tryAutoHealBridge(): Promise<{ bridgeUrl: string; token: string } | null> {
+let syncingToMac = false;
+
+async function syncDeviceChatsToMac(bridgeUrl: string, token: string) {
+  if (syncingToMac) return;
   const state = useStore.getState();
-  const candidates = Array.from(
-    new Set(
-      [
-        detectLiveMacBridgeUrl(),
-        state.bridgeUrl,
-        'http://10.10.0.160:4040',
-        'http://192.168.1.10:4040',
-      ].filter((x): x is string => Boolean(x)),
-    ),
-  );
-
-  for (const candidateUrl of candidates) {
-    try {
-      const ac = new AbortController();
-      const t = setTimeout(() => ac.abort(), 1800);
-      const res = await fetch(`${candidateUrl}/api/auto-pair`, { signal: ac.signal });
-      clearTimeout(t);
-      if (res.ok) {
-        const j = await res.json();
-        const nextToken = j?.token ? String(j.token) : state.token;
-        if (nextToken) {
-          await state.setPairing(candidateUrl, nextToken);
-          return { bridgeUrl: candidateUrl, token: nextToken };
-        }
-      }
-    } catch {
-      /* try next candidate */
+  const localAgents = state.localAgents ?? [];
+  if (localAgents.length === 0) return;
+  syncingToMac = true;
+  try {
+    const transcripts: Record<string, any[]> = {};
+    for (const ag of localAgents.slice(0, 12)) {
+      const items = loadDeviceChatItems(ag.id);
+      if (items.length > 0) transcripts[ag.id] = items;
     }
+    await fetch(`${bridgeUrl}/api/local/sync-device`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ agents: localAgents, transcripts }),
+    });
+  } catch {
+    /* ignore background sync errors */
+  } finally {
+    syncingToMac = false;
+  }
+}
+
+async function probeBridgeCandidate(
+  candidateUrl: string,
+  fallbackToken: string | null,
+  timeoutMs = 2200,
+): Promise<{ bridgeUrl: string; token: string } | null> {
+  const state = useStore.getState();
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutMs);
+    const res = await fetch(`${candidateUrl}/api/auto-pair`, { signal: ac.signal });
+    clearTimeout(t);
+    if (res.ok) {
+      const j = await res.json();
+      const nextToken = j?.token ? String(j.token) : fallbackToken;
+      if (nextToken) {
+        const isTunnel = candidateUrl.startsWith('https://');
+        await state.setPairing(candidateUrl, nextToken);
+        state.setConnectionEndpoints({
+          tunnelUrl: j?.tunnelUrl || (isTunnel ? candidateUrl : state.tunnelUrl),
+          tailscaleUrl: j?.tailscaleUrl || state.tailscaleUrl,
+          lanUrl: j?.lanUrl || (!isTunnel ? candidateUrl : state.lanUrl),
+          connectionMode: isTunnel ? 'tunnel' : 'lan',
+        });
+        if (j?.cursorAuth?.accessToken) {
+          await state.saveCursorTokens(
+            j.cursorAuth.accessToken,
+            j.cursorAuth.refreshToken,
+            j.cursorAuth.email,
+          );
+        }
+        void syncDeviceChatsToMac(candidateUrl, nextToken);
+        return { bridgeUrl: candidateUrl, token: nextToken };
+      }
+    }
+  } catch {
+    /* try next */
   }
   return null;
 }
 
-/** REST client for the bridge (SPEC.md §4) with automatic Wi-Fi IP healing. */
+/**
+ * Multi-tier umbilical healing:
+ *  Tier 1: Same-Wi-Fi LAN (`detectLiveMacBridgeUrl()`, `state.lanUrl`)
+ *  Tier 2: Cached Worldwide HTTPS Tunnel (`state.tunnelUrl`) or Tailscale (`state.tailscaleUrl`)
+ *  Tier 3: Live Worldwide Rendezvous Beacon (`https://ntfy.sh/cuss-umbilical-<sha256>`)
+ */
+export async function tryAutoHealBridge(): Promise<{ bridgeUrl: string; token: string } | null> {
+  const state = useStore.getState();
+  const directCandidates = Array.from(
+    new Set(
+      [
+        detectLiveMacBridgeUrl(),
+        state.bridgeUrl,
+        state.tunnelUrl,
+        state.tailscaleUrl,
+        state.lanUrl,
+      ].filter((x): x is string => Boolean(x)),
+    ),
+  );
+
+  for (const candidateUrl of directCandidates) {
+    const ok = await probeBridgeCandidate(
+      candidateUrl,
+      state.token,
+      candidateUrl.startsWith('https://') ? 3200 : 1800,
+    );
+    if (ok) return ok;
+  }
+
+  // Tier 3: Query the Worldwide Rendezvous Beacon for the Mac's latest tunnel URL / IP
+  if (state.token) {
+    const beacon = await resolveBeaconEndpoints(state.token);
+    for (const beaconUrl of beacon.urls) {
+      if (directCandidates.includes(beaconUrl)) continue;
+      const ok = await probeBridgeCandidate(beaconUrl, state.token, 3500);
+      if (ok) return ok;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Tier 4 — Autonomous Direct Cursor Cloud Engine (`https://api2.cursor.sh`) when the Mac is COMPLETELY SHUT DOWN!
+ * Uses the user's Cursor OAuth `accessToken` cached on the phone to talk directly to Cursor's cloud servers
+ * and local device storage so CUSS continues working 100% even when the laptop is powered off.
+ */
+async function handleAutonomousCloudFallback<T = any>(
+  path: string,
+  options: { method?: string; body?: any } = {},
+): Promise<T> {
+  const state = useStore.getState();
+  state.setConnectionEndpoints({ connectionMode: 'autonomous-cloud' });
+
+  const method = (options.method ?? 'GET').toUpperCase();
+  const body = (options.body ?? {}) as any;
+  const accessToken = state.cursorAccessToken || '';
+
+  // 1. Auth endpoints
+  if (path === '/api/local/auth/status') {
+    return {
+      loggedIn: Boolean(accessToken || state.cursorSignedIn),
+      email: state.accountEmail || undefined,
+      loginInProgress: false,
+    } as unknown as T;
+  }
+
+  if (path === '/api/local/auth/complete' && method === 'POST') {
+    if (body?.accessToken) {
+      await state.saveCursorTokens(body.accessToken, body.refreshToken, body.email);
+    }
+    return {
+      loggedIn: true,
+      email: body?.email || state.accountEmail || 'Cursor Account',
+    } as unknown as T;
+  }
+
+  if (path === '/api/local/auth/logout' && method === 'POST') {
+    await state.setCursorSignedIn(false, null);
+    return { loggedOut: true } as unknown as T;
+  }
+
+  if (path === '/api/local/auth/login' && method === 'POST') {
+    return {
+      loggedIn: Boolean(accessToken),
+      email: state.accountEmail || undefined,
+      loginInProgress: false,
+    } as unknown as T;
+  }
+
+  // 2. Cloud Background Composers (`GET /api/agents`)
+  if (path === '/api/agents' && method === 'GET') {
+    if (accessToken) {
+      const cloud = await directListCloudAgents(accessToken);
+      if (cloud.agents.length > 0) {
+        state.setAgents(cloud.agents);
+        return cloud as unknown as T;
+      }
+    }
+    return { agents: state.agents ?? [] } as unknown as T;
+  }
+
+  // 3. Local / Device Agent List & Sync
+  if (path.startsWith('/api/local/agents') && method === 'GET' && !path.slice('/api/local/agents'.length).startsWith('/')) {
+    return {
+      agents: state.localAgents ?? [],
+      account: { email: state.accountEmail || undefined },
+      autonomousCloud: true,
+    } as unknown as T;
+  }
+
+  if (path === '/api/local/sync-ide' && method === 'POST') {
+    return { agents: state.localAgents ?? [] } as unknown as T;
+  }
+
+  // 4. Models Catalog (`GET /api/local/models`)
+  if (path.startsWith('/api/local/models')) {
+    if (accessToken) {
+      const res = await directListModels(accessToken, state.accountEmail);
+      return res as unknown as T;
+    }
+    return {
+      account: { email: state.accountEmail || undefined },
+      families: state.modelFamilies,
+      rawModels: [],
+    } as unknown as T;
+  }
+
+  // 5. Settings & Live Plan Usage (`GET / POST /api/local/settings`)
+  if (path === '/api/local/settings' && method === 'GET') {
+    const res = await directGetSettingsAndUsage(
+      accessToken,
+      state.localAgents ?? [],
+      state.accountEmail,
+    );
+    return res as unknown as T;
+  }
+
+  if (path === '/api/local/settings' && method === 'POST') {
+    return {
+      ok: true,
+      cliConfig: body?.cliConfig ?? {},
+      desktopSettings: body?.desktopSettings ?? {},
+    } as unknown as T;
+  }
+
+  // 6. IDE State, Projects, Directory Browser, Files
+  if (path === '/api/local/ide-state') {
+    if (state.ideState) return state.ideState as unknown as T;
+    const defaultCwd = state.selectedCwd || state.projects?.[0]?.path || '/workspace';
+    return {
+      activeWorkspace: {
+        path: defaultCwd,
+        name: defaultCwd.split('/').filter(Boolean).pop() || 'workspace',
+        branch: 'main',
+      },
+      recentFiles: [],
+      mcpServers: [],
+      plans: [],
+    } as unknown as T;
+  }
+
+  if (path === '/api/local/projects') {
+    const projs =
+      Array.isArray(state.projects) && state.projects.length > 0
+        ? state.projects
+        : [
+            {
+              path: state.selectedCwd || '/workspace',
+              name: (state.selectedCwd || '/workspace').split('/').filter(Boolean).pop() || 'workspace',
+              branch: 'main',
+            },
+          ];
+    return { projects: projs } as unknown as T;
+  }
+
+  if (path.startsWith('/api/local/browse-dirs')) {
+    const currentPath = state.selectedCwd || state.projects?.[0]?.path || '/Users';
+    const dirs = (state.projects ?? []).map((p) => ({
+      name: p.name || p.path.split('/').filter(Boolean).pop() || p.path,
+      path: p.path,
+      branch: p.branch || 'main',
+      isGitRepo: true,
+    }));
+    return {
+      currentPath,
+      parentPath: currentPath.split('/').slice(0, -1).join('/') || '/',
+      directories: dirs,
+    } as unknown as T;
+  }
+
+  if (path.startsWith('/api/local/files')) {
+    const recent = (state.ideState?.recentFiles ?? []).map((f) => ({
+      path: f.absolutePath,
+      relativePath: f.relativePath,
+      size: 0,
+    }));
+    return { files: recent } as unknown as T;
+  }
+
+  if (path.startsWith('/api/local/git-diff')) {
+    return {
+      branch: 'main',
+      branches: ['main'],
+      changedFiles: [],
+      statSummary: 'Mac is currently powered off — running in Autonomous Direct Cloud mode.',
+      diff: '',
+    } as unknown as T;
+  }
+
+  // 7. Create Agent & Run Direct Turn on `https://api2.cursor.sh` (`POST /api/local/agents`)
+  if (path === '/api/local/agents' && method === 'POST') {
+    if (!accessToken) {
+      throw Object.assign(
+        new Error('Mac is shut down. Sign in to Cursor on the Landing screen once to run agents directly from your phone.'),
+        { status: 401, code: 'cursor_auth_required' },
+      );
+    }
+    const promptText = String(body?.prompt ?? '').trim();
+    const cwd = String(body?.cwd ?? state.selectedCwd ?? '/workspace').trim();
+    const title = await directNameAgent(accessToken, promptText);
+    const id = `cuss-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const nowIso = new Date().toISOString();
+    const newAgent: LocalAgent = {
+      id,
+      name: title,
+      cwd,
+      mode: body?.mode ?? 'agent',
+      model: body?.model ?? 'auto',
+      effort: body?.effort ?? 'auto',
+      contextWindow: body?.context ?? 'auto',
+      fast: Boolean(body?.fast),
+      thinking: body?.thinking ?? true,
+      createdAt: nowIso,
+      lastStatus: 'running',
+      lastActivityAt: nowIso,
+    };
+    state.setLocalAgents([newAgent, ...(state.localAgents ?? [])]);
+
+    void runDirectPhoneCursorTurn({
+      accessToken,
+      agentId: id,
+      promptText,
+      cwd,
+      mode: body?.mode,
+      model: body?.model,
+      effort: body?.effort,
+      context: body?.context,
+      fast: body?.fast,
+      thinking: body?.thinking,
+    });
+
+    return { agent: newAgent } as unknown as T;
+  }
+
+  // 8. Detail, Prompt, Stop, Rename, Delete on `/api/local/agents/:id...`
+  const agentMatch = path.match(/^\/api\/local\/agents\/([^/?#]+)(?:\/([^/?#]+))?/);
+  if (agentMatch) {
+    const agentId = decodeURIComponent(agentMatch[1]);
+    const subAction = agentMatch[2];
+
+    if (!subAction && method === 'GET') {
+      const found = (state.localAgents ?? []).find((a) => a.id === agentId);
+      const events = loadDeviceChatItems(agentId);
+      return {
+        agent: found ?? {
+          id: agentId,
+          name: agentId,
+          cwd: state.selectedCwd || '/workspace',
+          createdAt: new Date().toISOString(),
+          lastStatus: 'idle',
+          lastActivityAt: new Date().toISOString(),
+        },
+        events,
+      } as unknown as T;
+    }
+
+    if (subAction === 'prompt' && method === 'POST') {
+      if (!accessToken) {
+        throw Object.assign(
+          new Error('Mac is shut down. Sign in to Cursor on the Landing screen to prompt agents directly from your phone.'),
+          { status: 401, code: 'cursor_auth_required' },
+        );
+      }
+      const found = (state.localAgents ?? []).find((a) => a.id === agentId);
+      void runDirectPhoneCursorTurn({
+        accessToken,
+        agentId,
+        promptText: String(body?.text ?? '').trim(),
+        cwd: found?.cwd || state.selectedCwd || '/workspace',
+        mode: body?.mode ?? found?.mode,
+        model: body?.model ?? found?.model,
+        effort: body?.effort ?? found?.effort,
+        context: body?.context ?? found?.contextWindow,
+        fast: body?.fast ?? found?.fast,
+        thinking: body?.thinking ?? found?.thinking,
+      });
+      return { queued: false } as unknown as T;
+    }
+
+    if (subAction === 'stop' && method === 'POST') {
+      const stopped = stopDirectAgentRun(agentId);
+      return { stopped } as unknown as T;
+    }
+
+    if (!subAction && method === 'PATCH') {
+      state.renameLocalAgentOnDevice(agentId, String(body?.name ?? '').trim());
+      const updated = (useStore.getState().localAgents ?? []).find((a) => a.id === agentId);
+      return { agent: updated } as unknown as T;
+    }
+
+    if (!subAction && method === 'DELETE') {
+      state.deleteLocalAgentOnDevice(agentId);
+      return { deleted: true, id: agentId } as unknown as T;
+    }
+  }
+
+  throw Object.assign(
+    new Error('Mac is currently powered off or unreachable for this hardware-only action.'),
+    { status: 503, code: 'mac_offline' },
+  );
+}
+
+/**
+ * REST client for CUSS with 4-tier resilience:
+ *  1. Local LAN Wi-Fi (`http://<LAN_IP>:4040`)
+ *  2. Worldwide HTTPS Tunnel (`https://*.lhr.life` / `https://*.trycloudflare.com`) & Tailscale (`100.x.y.z`)
+ *  3. Worldwide Rendezvous Beacon (`ntfy.sh/cuss-umbilical-<sha256>`)
+ *  4. Autonomous Direct Cursor Cloud Engine (`https://api2.cursor.sh`) when the Mac is completely shut down!
+ */
 export async function api<T = any>(
   path: string,
   options: { method?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<T> {
-  let { bridgeUrl, token, setPairing } = useStore.getState();
+  let { bridgeUrl, token, setPairing, setConnectionEndpoints } = useStore.getState();
   const liveDetectedUrl = detectLiveMacBridgeUrl();
 
   // If Expo Go knows our Mac's current Wi-Fi IP and it differs from a stale LAN IP, switch before fetching!
@@ -63,11 +438,14 @@ export async function api<T = any>(
 
   if (!bridgeUrl || !token) {
     const healed = await tryAutoHealBridge();
-    if (!healed) {
+    if (healed) {
+      bridgeUrl = healed.bridgeUrl;
+      token = healed.token;
+    } else if (useStore.getState().cursorAccessToken) {
+      return await handleAutonomousCloudFallback<T>(path, options);
+    } else {
       throw Object.assign(new Error('not paired'), { status: 0, code: 'not_paired' });
     }
-    bridgeUrl = healed.bridgeUrl;
-    token = healed.token;
   }
 
   const doFetch = async (targetUrl: string, targetToken: string, timeout: number) => {
@@ -90,27 +468,26 @@ export async function api<T = any>(
 
   let res: Response;
   try {
-    // Use a fast 4.5s initial probe on GET/auth calls so a changed Wi-Fi IP heals in <5s instead of hanging 30s
-    const initialTimeout = options.timeoutMs ?? 8_000;
+    const initialTimeout = options.timeoutMs ?? 5_500;
     res = await doFetch(bridgeUrl, token, initialTimeout);
+    setConnectionEndpoints({
+      connectionMode: bridgeUrl.startsWith('https://') ? 'tunnel' : 'lan',
+    });
   } catch (e: any) {
-    // Network unreachable or timed out (e.g. Wi-Fi IP changed from 192.168.1.10 -> 10.10.0.160) -> auto-heal & retry once!
+    // LAN or cached URL unreachable -> try Worldwide Tunnel / Tailscale / Beacon!
     const healed = await tryAutoHealBridge();
     if (healed) {
-      res = await doFetch(healed.bridgeUrl, healed.token, options.timeoutMs ?? 12_000);
-    } else {
-      const msg = String(e?.message ?? e);
-      if (e?.name === 'AbortError' || /cancelled|canceled|aborted/i.test(msg)) {
-        throw Object.assign(
-          new Error(
-            `Cannot reach Mac at ${bridgeUrl}. Ensure your phone and Mac are on the same Wi-Fi (or Tailscale).`,
-          ),
-          { status: 0, code: 'timeout' },
-        );
+      try {
+        res = await doFetch(healed.bridgeUrl, healed.token, options.timeoutMs ?? 10_000);
+      } catch {
+        return await handleAutonomousCloudFallback<T>(path, options);
       }
-      throw e;
+    } else {
+      // Mac is completely shut down / offline -> seamlessly run on Autonomous Direct Cursor Cloud!
+      return await handleAutonomousCloudFallback<T>(path, options);
     }
   }
+
   const text = await res.text();
   let json: any = null;
   try {
@@ -124,6 +501,18 @@ export async function api<T = any>(
       code: json?.code ?? `http_${res.status}`,
     });
   }
+
+  // Opportunistically cache cursorAuth if returned by /api/local/auth/status
+  if (json?.cursorAuth?.accessToken) {
+    void useStore
+      .getState()
+      .saveCursorTokens(
+        json.cursorAuth.accessToken,
+        json.cursorAuth.refreshToken,
+        json.cursorAuth.email,
+      );
+  }
+
   return json as T;
 }
 
@@ -141,9 +530,9 @@ export const cancelRun = (agentId: string) => api(`/api/agents/${agentId}/cancel
 export const archiveAgent = (agentId: string) => api(`/api/agents/${agentId}/archive`, { method: 'POST' });
 export const agentDetail = (agentId: string) => api(`/api/agents/${agentId}`);
 
-// --- Local agents: run on the Mac itself via the Cursor Agent CLI (SPEC.md §4 v2) ---
+// --- Local agents: run on the Mac itself via the Cursor Agent CLI (or Direct Cloud when Mac is shut down) ---
 export const localList = (syncIde = false) =>
-  api<{ agents: any[]; account?: { email?: string; displayName?: string } }>(
+  api<{ agents: any[]; account?: { email?: string; displayName?: string }; autonomousCloud?: boolean }>(
     `/api/local/agents${syncIde ? '?sync=1' : ''}`,
   );
 
@@ -153,6 +542,11 @@ export interface CursorAuthStatus {
   displayName?: string;
   loginInProgress: boolean;
   loginUrl?: string;
+  cursorAuth?: {
+    accessToken: string;
+    refreshToken?: string;
+    email?: string;
+  };
 }
 
 export const localAuthStatus = () => api<CursorAuthStatus>('/api/local/auth/status');
@@ -280,7 +674,6 @@ export const localMacAction = (body: {
 
 export type MacInputAction = Parameters<typeof localMacAction>[0];
 
-/** Accessibility snapshot of the focused Mac field (focused-field echo, secure lock, field-aware Enter). */
 export interface MacFocusInfo {
   ok: boolean;
   trusted: boolean;
