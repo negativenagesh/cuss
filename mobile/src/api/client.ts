@@ -10,12 +10,15 @@ import {
 } from '../store';
 import type { ExecutionMode } from '../theme';
 import {
+  clearSyncedOfflineFileEdits,
   directGetSettingsAndUsage,
   directListCloudAgents,
   directListModels,
   directNameAgent,
+  readDeviceWorkspaceCache,
   resolveBeaconEndpoints,
   runDirectPhoneCursorTurn,
+  saveDeviceWorkspaceSnapshot,
   stopDirectAgentRun,
 } from './direct-cursor';
 
@@ -25,22 +28,46 @@ async function syncDeviceChatsToMac(bridgeUrl: string, token: string) {
   if (syncingToMac) return;
   const state = useStore.getState();
   const localAgents = state.localAgents ?? [];
-  if (localAgents.length === 0) return;
+  const wsCache = readDeviceWorkspaceCache();
   syncingToMac = true;
   try {
-    const transcripts: Record<string, any[]> = {};
-    for (const ag of localAgents.slice(0, 12)) {
-      const items = loadDeviceChatItems(ag.id);
-      if (items.length > 0) transcripts[ag.id] = items;
+    if (localAgents.length > 0 || wsCache.dirtyEdits.length > 0) {
+      const transcripts: Record<string, any[]> = {};
+      for (const ag of localAgents.slice(0, 12)) {
+        const items = loadDeviceChatItems(ag.id);
+        if (items.length > 0) transcripts[ag.id] = items;
+      }
+      const res = await fetch(`${bridgeUrl}/api/local/sync-device`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          agents: localAgents,
+          transcripts,
+          fileEdits: wsCache.dirtyEdits,
+        }),
+      });
+      if (res.ok && wsCache.dirtyEdits.length > 0) {
+        clearSyncedOfflineFileEdits();
+      }
     }
-    await fetch(`${bridgeUrl}/api/local/sync-device`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
+
+    // Pull a fresh Workspace Cache snapshot of the active directory so files are ready if Mac is later turned off
+    const activeCwd = state.selectedCwd || state.ideState?.activeWorkspace?.path || '';
+    const snapRes = await fetch(
+      `${bridgeUrl}/api/local/workspace-snapshot${activeCwd ? `?cwd=${encodeURIComponent(activeCwd)}` : ''}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
       },
-      body: JSON.stringify({ agents: localAgents, transcripts }),
-    });
+    );
+    if (snapRes.ok) {
+      const snap = await snapRes.json();
+      if (snap?.cwd && Array.isArray(snap?.files)) {
+        saveDeviceWorkspaceSnapshot(snap.cwd, snap.files);
+      }
+    }
   } catch {
     /* ignore background sync errors */
   } finally {
@@ -280,6 +307,19 @@ async function handleAutonomousCloudFallback<T = any>(
   }
 
   if (path.startsWith('/api/local/files')) {
+    const wsCache = readDeviceWorkspaceCache();
+    const qMatch = path.match(/[?&]q=([^&#]*)/);
+    const q = qMatch ? decodeURIComponent(qMatch[1]).toLowerCase() : '';
+    const cachedFiles = wsCache.files
+      .filter((f) => !q || f.relativePath.toLowerCase().includes(q) || f.path.toLowerCase().includes(q))
+      .map((f) => ({
+        path: f.path,
+        relativePath: f.relativePath,
+        size: f.size,
+      }));
+    if (cachedFiles.length > 0) {
+      return { files: cachedFiles } as unknown as T;
+    }
     const recent = (state.ideState?.recentFiles ?? []).map((f) => ({
       path: f.absolutePath,
       relativePath: f.relativePath,
@@ -288,13 +328,58 @@ async function handleAutonomousCloudFallback<T = any>(
     return { files: recent } as unknown as T;
   }
 
-  if (path.startsWith('/api/local/git-diff')) {
+  if (path.startsWith('/api/local/file-content')) {
+    const wsCache = readDeviceWorkspaceCache();
+    const pMatch = path.match(/[?&]path=([^&#]*)/);
+    const targetPath = pMatch ? decodeURIComponent(pMatch[1]) : '';
+    const found = wsCache.files.find(
+      (f) =>
+        f.path === targetPath ||
+        f.relativePath === targetPath ||
+        f.path.endsWith(`/${targetPath}`),
+    );
+    const content = found?.content ?? '';
+    const name = targetPath.split('/').pop() || targetPath;
     return {
-      branch: 'main',
+      ok: Boolean(found),
+      kind: name.endsWith('.md') ? 'markdown' : name.endsWith('.json') ? 'json' : 'code',
+      name,
+      relativePath: found?.relativePath || targetPath,
+      absolutePath: found?.path || targetPath,
+      size: content.length,
+      language: name.split('.').pop() || 'text',
+      content:
+        content ||
+        `// File ${targetPath} is not in the offline device cache yet.\n// Connect to your Mac once to cache this file.`,
+      lineCount: content ? content.split('\n').length : 2,
+    } as unknown as T;
+  }
+
+  if (path.startsWith('/api/local/git-diff')) {
+    const wsCache = readDeviceWorkspaceCache();
+    const changedFiles = wsCache.dirtyEdits.map((d) => ({
+      status: 'M',
+      path: d.path,
+    }));
+    const diffText = wsCache.dirtyEdits
+      .map(
+        (d) =>
+          `--- a/${d.path}\n+++ b/${d.path}\n@@ -1 +1,${d.content.split('\n').length} @@\n` +
+          d.content
+            .split('\n')
+            .map((l) => `+${l}`)
+            .join('\n'),
+      )
+      .join('\n\n');
+    return {
+      branch: 'main (offline-cache)',
       branches: ['main'],
-      changedFiles: [],
-      statSummary: 'Mac is currently powered off — running in Autonomous Direct Cloud mode.',
-      diff: '',
+      changedFiles,
+      statSummary:
+        changedFiles.length > 0
+          ? `${changedFiles.length} file(s) edited on phone while Mac is off (will auto-sync when Mac turns on)`
+          : 'Mac is powered off — Workspace Cache active (0 pending offline edits).',
+      diff: diffText,
     } as unknown as T;
   }
 

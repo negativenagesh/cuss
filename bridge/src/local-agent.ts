@@ -392,13 +392,15 @@ export class LocalAgentService extends EventEmitter {
   }
 
   /**
-   * Merge agents and transcripts created directly on the phone while the Mac was shut down / offline.
+   * Merge agents, transcripts, and offline file edits created directly on the phone while the Mac was shut down.
    */
   syncFromDevice(
     incomingAgents: LocalAgent[],
     transcripts?: Record<string, RunEvent[]>,
-  ): { synced: number; agents: LocalAgent[] } {
+    fileEdits?: { cwd?: string; path: string; content: string }[],
+  ): { synced: number; filesWritten: number; agents: LocalAgent[] } {
     let synced = 0;
+    let filesWritten = 0;
     if (Array.isArray(incomingAgents)) {
       for (const ag of incomingAgents) {
         if (!ag?.id || this.deletedIds.has(ag.id)) continue;
@@ -425,11 +427,69 @@ export class LocalAgentService extends EventEmitter {
         }
       }
     }
+    if (Array.isArray(fileEdits)) {
+      for (const edit of fileEdits) {
+        if (!edit?.path || typeof edit.content !== 'string') continue;
+        try {
+          const targetPath = edit.path.startsWith('/')
+            ? edit.path
+            : edit.cwd
+              ? join(edit.cwd, edit.path)
+              : '';
+          if (targetPath && !targetPath.includes('..')) {
+            const parentDir = targetPath.split('/').slice(0, -1).join('/');
+            if (parentDir && existsSync(parentDir)) {
+              writeFileSync(targetPath, edit.content, 'utf8');
+              filesWritten++;
+            }
+          }
+        } catch {
+          /* ignore individual file write errors */
+        }
+      }
+    }
     if (synced > 0) {
       this.save();
       this.emit('changed', this.list());
     }
-    return { synced, agents: this.list() };
+    return { synced, filesWritten, agents: this.list() };
+  }
+
+  /**
+   * Snapshot key text files in a workspace so the phone has a local copy of the active project
+   * when the Mac is later shut down.
+   */
+  getWorkspaceSnapshot(cwd?: string): {
+    cwd: string;
+    files: { path: string; relativePath: string; content: string; size: number }[];
+  } {
+    const resolvedCwd =
+      (cwd && existsSync(cwd) ? cwd : undefined) ||
+      this.getIdeState().activeWorkspace?.path ||
+      this.listProjects()[0]?.path ||
+      homedir();
+    const entries = listWorkspaceFiles(resolvedCwd, '', 45);
+    const files: { path: string; relativePath: string; content: string; size: number }[] = [];
+    let totalBytes = 0;
+    for (const entry of entries) {
+      if (totalBytes > 450_000) break;
+      try {
+        const fc = readWorkspaceFile(resolvedCwd, entry.path);
+        if (fc.ok && fc.kind !== 'image' && fc.kind !== 'binary' && fc.content) {
+          const sliced = fc.content.slice(0, 24_000);
+          totalBytes += sliced.length;
+          files.push({
+            path: fc.absolutePath,
+            relativePath: fc.relativePath,
+            content: sliced,
+            size: fc.size,
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return { cwd: resolvedCwd, files };
   }
 
   /** Read logged-in account metadata from ~/.cursor/cli-config.json or cached CLI status. */
