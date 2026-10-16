@@ -751,7 +751,7 @@ export function normalizeEventsToStreamItems<T = any>(rawList: unknown[]): T[] {
           details,
         };
       } else {
-        const newTool = {
+        out.push({
           id: `tool-${idx}`,
           kind: 'tool',
           callId,
@@ -759,17 +759,7 @@ export function normalizeEventsToStreamItems<T = any>(rawList: unknown[]): T[] {
           status,
           summary,
           details,
-        };
-        const ts = findTurnStart();
-        let astIdx = -1;
-        for (let i = out.length - 1; i > ts; i--) {
-          if (out[i].kind === 'assistant') {
-            astIdx = i;
-            break;
-          }
-        }
-        if (astIdx >= 0) out.splice(astIdx, 0, newTool);
-        else out.push(newTool);
+        });
       }
       continue;
     }
@@ -781,16 +771,12 @@ export function normalizeEventsToStreamItems<T = any>(rawList: unknown[]): T[] {
         .join('');
       if (!rawChunk.trim()) continue;
       const isDelta = typeof r.timestamp_ms === 'number';
-      const ts = findTurnStart();
-      let astIdx = -1;
-      for (let i = out.length - 1; i > ts; i--) {
-        if (out[i].kind === 'assistant') {
-          astIdx = i;
-          break;
-        }
-      }
-      if (astIdx >= 0) {
-        const prevText = String(out[astIdx].text ?? '');
+      const lastItem = out.length > 0 ? out[out.length - 1] : null;
+
+      // If this is a distinct .jsonl step (`r.step_id`) after a tool call, or if the last item is not an assistant item,
+      // push a new chronological assistant item so FlatList virtualizes each step cleanly!
+      if (lastItem && lastItem.kind === 'assistant' && (!r.step_id || lastItem.stepId === r.step_id)) {
+        const prevText = String(lastItem.text ?? '');
         let mergedText = prevText;
         if (isDelta) {
           mergedText = prevText + rawChunk;
@@ -801,18 +787,17 @@ export function normalizeEventsToStreamItems<T = any>(rawList: unknown[]): T[] {
           else if (prevText.includes(cleanChunk)) mergedText = prevText;
           else mergedText = `${prevText}\n\n${cleanChunk}`;
         }
-        const updatedAst = {
-          ...out[astIdx],
-          text: mergedText,
-          isComplete: !isDelta ? true : out[astIdx].isComplete,
+        out[out.length - 1] = {
+          ...lastItem,
+          text: mergedText.slice(0, 16_000),
+          isComplete: !isDelta ? true : lastItem.isComplete,
         };
-        out.splice(astIdx, 1);
-        out.push(updatedAst);
       } else {
         out.push({
-          id: `ast-${idx}`,
+          id: r.step_id ? `ast-${r.step_id}` : `ast-${idx}`,
+          stepId: r.step_id,
           kind: 'assistant',
-          text: isDelta ? rawChunk : rawChunk.trim(),
+          text: (isDelta ? rawChunk : rawChunk.trim()).slice(0, 16_000),
           isComplete: !isDelta,
         });
       }

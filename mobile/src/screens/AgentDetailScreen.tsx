@@ -904,11 +904,13 @@ export default function AgentDetailScreen({ route, navigation }: any) {
     });
   }, [navigation, isMac, agent.id, agent.name]);
 
-  // Persist chat items onto the Android device whenever `items` updates
+  // Debounce persisting chat items onto the Android device so streaming deltas and navigation never block the JS thread
   useEffect(() => {
-    if (items.length > 0) {
+    if (items.length === 0) return;
+    const timer = setTimeout(() => {
       saveDeviceChatItems(agent.id, items);
-    }
+    }, 650);
+    return () => clearTimeout(timer);
   }, [agent.id, items]);
 
   // Keyboard listener so the composer lifts smoothly above the keyboard
@@ -1153,6 +1155,9 @@ export default function AgentDetailScreen({ route, navigation }: any) {
     firstServerEventRef.current = true;
     receivedAnyRef.current = false;
 
+    let detailPollTimer: ReturnType<typeof setInterval> | null = null;
+    let lastEventCount = 0;
+
     (async () => {
       if (isMac) {
         const live = new LiveSocket(
@@ -1186,25 +1191,33 @@ export default function AgentDetailScreen({ route, navigation }: any) {
         live.connect();
         liveRef.current = live;
 
-        // Also fetch `localDetail` immediately on mount so returning to a running/completed chat
-        // after navigating away immediately hydrates the latest status and events!
-        localDetail(agent.id)
-          .then((d) => {
-            if (cancelled) return;
-            if (d?.agent?.lastStatus) {
-              setRunStatus(String(d.agent.lastStatus));
-            }
-            if (Array.isArray(d?.events) && d.events.length > 0) {
-              receivedAnyRef.current = true;
-              const hydrated = normalizeEventsToStreamItems<StreamItem>(d.events);
-              if (hydrated.length > 0) {
-                setItems(hydrated);
+        const pullLatestDetail = () => {
+          localDetail(agent.id)
+            .then((d) => {
+              if (cancelled) return;
+              if (d?.agent?.lastStatus) {
+                setRunStatus(String(d.agent.lastStatus));
               }
-            }
-          })
-          .catch(() => {
-            /* offline: saved Android device items remain displayed */
-          });
+              if (Array.isArray(d?.events) && d.events.length > 0 && d.events.length !== lastEventCount) {
+                lastEventCount = d.events.length;
+                receivedAnyRef.current = true;
+                const hydrated = normalizeEventsToStreamItems<StreamItem>(d.events);
+                if (hydrated.length > 0) {
+                  setItems(hydrated);
+                  if (isNearBottomRef.current) {
+                    setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
+                  }
+                }
+              }
+            })
+            .catch(() => {
+              /* offline: saved Android device items remain displayed */
+            });
+        };
+
+        pullLatestDetail();
+        // Poll every 2.2s while viewing a session so live activity in Mac Cursor Desktop IDE streams in real time
+        detailPollTimer = setInterval(pullLatestDetail, 2200);
         return;
       }
 
@@ -1259,6 +1272,7 @@ export default function AgentDetailScreen({ route, navigation }: any) {
 
     return () => {
       cancelled = true;
+      if (detailPollTimer) clearInterval(detailPollTimer);
       liveRef.current?.send(isMac ? { type: 'local:unsubscribe' } : { type: 'run:unsubscribe' });
       liveRef.current?.close();
     };

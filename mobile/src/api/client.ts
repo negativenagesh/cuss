@@ -28,13 +28,15 @@ let syncingToMac = false;
 async function syncDeviceChatsToMac(bridgeUrl: string, token: string) {
   if (syncingToMac) return;
   const state = useStore.getState();
-  const localAgents = state.localAgents ?? [];
+  const offlineCreatedAgents = (state.localAgents ?? []).filter((a) =>
+    String(a?.id ?? '').startsWith('cuss-'),
+  );
   const wsCache = readDeviceWorkspaceCache();
   syncingToMac = true;
   try {
-    if (localAgents.length > 0 || wsCache.dirtyEdits.length > 0) {
+    if (offlineCreatedAgents.length > 0 || wsCache.dirtyEdits.length > 0) {
       const transcripts: Record<string, any[]> = {};
-      for (const ag of localAgents.slice(0, 12)) {
+      for (const ag of offlineCreatedAgents.slice(0, 8)) {
         const items = loadDeviceChatItems(ag.id);
         if (items.length > 0) transcripts[ag.id] = items;
       }
@@ -45,28 +47,13 @@ async function syncDeviceChatsToMac(bridgeUrl: string, token: string) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          agents: localAgents,
+          agents: offlineCreatedAgents,
           transcripts,
           fileEdits: wsCache.dirtyEdits,
         }),
       });
       if (res.ok && wsCache.dirtyEdits.length > 0) {
         clearSyncedOfflineFileEdits();
-      }
-    }
-
-    // Pull a fresh Workspace Cache snapshot of the active directory so files are ready if Mac is later turned off
-    const activeCwd = state.selectedCwd || state.ideState?.activeWorkspace?.path || '';
-    const snapRes = await fetch(
-      `${bridgeUrl}/api/local/workspace-snapshot${activeCwd ? `?cwd=${encodeURIComponent(activeCwd)}` : ''}`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-      },
-    );
-    if (snapRes.ok) {
-      const snap = await snapRes.json();
-      if (snap?.cwd && Array.isArray(snap?.files)) {
-        saveDeviceWorkspaceSnapshot(snap.cwd, snap.files);
       }
     }
   } catch {
@@ -660,34 +647,29 @@ export const localAuthLogout = () =>
 
 export const localSyncIde = async () => {
   const state = useStore.getState();
-  const deviceAgents = state.localAgents ?? [];
+  const offlineCreatedAgents = (state.localAgents ?? []).filter((a) =>
+    String(a?.id ?? '').startsWith('cuss-'),
+  );
   const deviceTranscripts: Record<string, any[]> = {};
-  for (const ag of deviceAgents.slice(0, 15)) {
+  for (const ag of offlineCreatedAgents.slice(0, 8)) {
     const items = loadDeviceChatItems(ag.id);
     if (items.length > 0) deviceTranscripts[ag.id] = items;
   }
   const wsCache = readDeviceWorkspaceCache();
-  const res = await api<{ agents: any[]; recentTranscripts?: Record<string, any[]> }>(
-    '/api/local/sync-ide',
-    {
-      method: 'POST',
-      body: {
-        deviceAgents,
-        deviceTranscripts,
-        fileEdits: wsCache.dirtyEdits,
-      },
-      timeoutMs: 20_000,
-    },
-  );
+  const res = await api<{ agents: any[] }>('/api/local/sync-ide', {
+    method: 'POST',
+    body:
+      offlineCreatedAgents.length > 0 || wsCache.dirtyEdits.length > 0
+        ? {
+            deviceAgents: offlineCreatedAgents,
+            deviceTranscripts,
+            fileEdits: wsCache.dirtyEdits,
+          }
+        : {},
+    timeoutMs: 12_000,
+  });
   if (wsCache.dirtyEdits.length > 0) {
     clearSyncedOfflineFileEdits();
-  }
-  if (res?.recentTranscripts && typeof res.recentTranscripts === 'object') {
-    for (const [id, evts] of Object.entries(res.recentTranscripts)) {
-      if (Array.isArray(evts) && evts.length > 0) {
-        saveDeviceChatItems(id, evts);
-      }
-    }
   }
   return res;
 };

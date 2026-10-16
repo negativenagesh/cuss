@@ -255,7 +255,17 @@ export default function DashboardScreen({ navigation }: any) {
       );
       live.connect();
     })();
-    return () => live?.close();
+    const pollIv = setInterval(() => {
+      localList(true)
+        .then((res) => {
+          if (Array.isArray(res?.agents)) setLocalAgents(res.agents);
+        })
+        .catch(() => {});
+    }, 3500);
+    return () => {
+      clearInterval(pollIv);
+      live?.close();
+    };
   }, []);
 
   const isMac = mode === 'mac';
@@ -300,6 +310,9 @@ export default function DashboardScreen({ navigation }: any) {
       <FlatList
         data={shown}
         keyExtractor={(a: Agent, i: number) => a.id || `ag-${i}`}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={7}
         contentContainerStyle={{ paddingBottom: 36 }}
         ListHeaderComponent={
           <View>
