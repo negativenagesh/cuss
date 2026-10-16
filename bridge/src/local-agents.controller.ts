@@ -109,14 +109,7 @@ export class LocalAgentsController {
       );
     }
     const agents = this.local.syncIdeTranscripts(60);
-    const recentTranscripts: Record<string, any[]> = {};
-    for (const ag of agents.slice(0, 20)) {
-      const evts = this.local.getRecentEvents(ag.id);
-      if (evts.length > 0) {
-        recentTranscripts[ag.id] = evts;
-      }
-    }
-    return { agents, recentTranscripts };
+    return { agents };
   }
 
   @Post('sync-device')
@@ -368,9 +361,24 @@ export class LocalAgentsController {
 
   @Get('agents/:id')
   detail(@Param('id') id: string) {
-    const agent = this.local.get(id);
-    if (!agent) throw new HttpException({ code: 'not_found', message: 'unknown agent' }, 404);
-    return { agent, events: this.local.getRecentEvents(id) };
+    let agent = this.local.get(id);
+    const events = this.local.getRecentEvents(id);
+    if (!agent && events.length === 0) {
+      throw new HttpException({ code: 'not_found', message: 'unknown agent' }, 404);
+    }
+    if (!agent) {
+      this.local.syncIdeTranscripts(80);
+      agent = this.local.get(id) ?? {
+        id,
+        name: id,
+        cwd: '',
+        mode: 'agent',
+        createdAt: new Date().toISOString(),
+        lastStatus: 'done',
+        lastActivityAt: new Date().toISOString(),
+      };
+    }
+    return { agent, events };
   }
 
   @Patch('agents/:id')
