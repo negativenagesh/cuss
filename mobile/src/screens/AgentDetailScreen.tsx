@@ -83,6 +83,7 @@ import { LiveSocket } from '../api/live';
 import {
   Agent,
   loadDeviceChatItems,
+  normalizeEventsToStreamItems,
   PromptAttachments,
   saveDeviceChatItems,
   useStore,
@@ -155,9 +156,19 @@ function upsertSingleTurnAssistant(
 
   if (existingIdx >= 0) {
     const existing = prev[existingIdx] as Extract<StreamItem, { kind: 'assistant' }>;
+    let mergedText = nextText || existing.text;
+    if (meta?.isComplete && existing.text && nextText) {
+      if (nextText.includes(existing.text)) {
+        mergedText = nextText;
+      } else if (existing.text.includes(nextText)) {
+        mergedText = existing.text;
+      } else {
+        mergedText = `${existing.text}\n\n${nextText}`;
+      }
+    }
     const updatedItem: Extract<StreamItem, { kind: 'assistant' }> = {
       ...existing,
-      text: nextText || existing.text,
+      text: mergedText,
       durationMs: meta?.durationMs ?? existing.durationMs,
       tokensOut: meta?.tokensOut ?? existing.tokensOut,
       isComplete: meta?.isComplete ?? existing.isComplete,
@@ -939,14 +950,19 @@ export default function AgentDetailScreen({ route, navigation }: any) {
       if (!turnText) return;
 
       setItems((prev) => {
-        // Deduplicate if this user message is already present in the current or recent turn
-        const existingIdx = prev.findIndex(
-          (it) => it.kind === 'user' && it.text.trim() === turnText.trim(),
-        );
-        if (existingIdx >= 0) {
-          const existing = prev[existingIdx] as Extract<StreamItem, { kind: 'user' }>;
+        // Only deduplicate against the current last user turn if it has not received an assistant reply yet
+        const lastTurnIdx = findCurrentTurnStart(prev);
+        const hasReplyAfter =
+          lastTurnIdx >= 0 && prev.slice(lastTurnIdx + 1).some((it) => it.kind === 'assistant');
+        if (
+          lastTurnIdx >= 0 &&
+          !hasReplyAfter &&
+          prev[lastTurnIdx].kind === 'user' &&
+          prev[lastTurnIdx].text.trim() === turnText.trim()
+        ) {
+          const existing = prev[lastTurnIdx] as Extract<StreamItem, { kind: 'user' }>;
           const copy = [...prev];
-          copy[existingIdx] = {
+          copy[lastTurnIdx] = {
             ...existing,
             mode: r.mode ?? existing.mode,
             model: r.model ?? existing.model,
@@ -1178,9 +1194,12 @@ export default function AgentDetailScreen({ route, navigation }: any) {
             if (d?.agent?.lastStatus) {
               setRunStatus(String(d.agent.lastStatus));
             }
-            if (d?.events?.length) {
+            if (Array.isArray(d?.events) && d.events.length > 0) {
               receivedAnyRef.current = true;
-              for (const ev of d.events) ingestLocalEvent(ev.raw);
+              const hydrated = normalizeEventsToStreamItems<StreamItem>(d.events);
+              if (hydrated.length > 0) {
+                setItems(hydrated);
+              }
             }
           })
           .catch(() => {

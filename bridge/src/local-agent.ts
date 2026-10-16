@@ -170,22 +170,25 @@ export class LocalAgentService extends EventEmitter {
 
   /**
    * Last N events of an agent, for replay when a phone opens the chat late.
-   * If in-memory buffer is empty (e.g. after bridge restart or IDE-native session),
-   * automatically hydrates from `~/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl`.
+   * When the agent is not actively running a CLI turn, also checks the `.jsonl` transcript
+   * on disk (`~/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl`) so any new turns
+   * added in Cursor Desktop IDE on the Mac are always reflected immediately!
    */
   getRecentEvents(agentId: string): RunEvent[] {
     const mem = this.recentEvents.get(agentId);
-    if (mem && mem.length > 0) return mem;
+    if (this.running.has(agentId) && mem && mem.length > 0) {
+      return mem;
+    }
     const diskPath = this.findTranscriptJsonlPath(agentId);
     if (diskPath) {
       const parsed = parseCursorJsonlTranscript(agentId, diskPath);
-      if (parsed.events.length > 0) {
+      if (parsed.events.length > 0 && (!mem || parsed.events.length >= mem.length)) {
         const sliced = parsed.events.slice(-LocalAgentService.EVENT_BUFFER);
         this.recentEvents.set(agentId, sliced);
         return sliced;
       }
     }
-    return [];
+    return mem ?? [];
   }
 
   private findTranscriptJsonlPath(agentId: string): string | undefined {
@@ -277,9 +280,14 @@ export class LocalAgentService extends EventEmitter {
   ) {
     super();
     this.load();
-    // Warm verified account info and pre-allocate a chat ID for the active workspace on boot
+    // Warm verified account info, sync all local Mac IDE chats, and pre-allocate a chat ID on boot
     if (this.cliPath === CLI) {
       this.syncAuthFromCursorDesktop();
+      try {
+        this.syncIdeTranscripts(50);
+      } catch {
+        /* ignore */
+      }
       void this.getAuthStatus().catch(() => {});
       const topProj = this.listProjects()[0]?.path;
       if (topProj) this.replenishWarmChatId(topProj);
@@ -1889,51 +1897,266 @@ print(output)
   }
 
   /**
-   * Sync recent native `.jsonl` transcripts from `~/.cursor/projects/<slug>/agent-transcripts/`
-   * for active Cursor workspaces so chats started in the Mac IDE also appear on the phone!
+   * Read Cursor Desktop IDE composer metadata (`name`, `lastUpdatedAt`, `createdAt`, `mode`, `model`, `cwd`)
+   * from `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` (`composerHeaders` + `cursorDiskKV`).
    */
-  syncIdeTranscripts(maxPerWorkspace = 3): LocalAgent[] {
+  private readDesktopComposerMetadataMap(): Map<
+    string,
+    {
+      name?: string;
+      lastUpdatedAtMs?: number;
+      createdAtMs?: number;
+      mode?: ExecutionMode;
+      model?: string;
+      cwd?: string;
+    }
+  > {
+    const out = new Map<
+      string,
+      {
+        name?: string;
+        lastUpdatedAtMs?: number;
+        createdAtMs?: number;
+        mode?: ExecutionMode;
+        model?: string;
+        cwd?: string;
+      }
+    >();
+    if (!existsSync(DESKTOP_STATE_DB_PATH)) return out;
+    try {
+      const sql = `
+        SELECT
+          h.composerId,
+          COALESCE(json_extract(kv.value, '$.name'), json_extract(h.value, '$.name'), ''),
+          COALESCE(json_extract(kv.value, '$.lastUpdatedAt'), h.lastUpdatedAt, 0),
+          COALESCE(json_extract(kv.value, '$.createdAt'), h.createdAt, 0),
+          COALESCE(json_extract(kv.value, '$.unifiedMode'), 'agent'),
+          COALESCE(json_extract(kv.value, '$.modelConfig.modelName'), ''),
+          COALESCE(json_extract(kv.value, '$.workspaceIdentifier.uri.fsPath'), '')
+        FROM composerHeaders h
+        LEFT JOIN cursorDiskKV kv ON kv.key = 'composerData:' || h.composerId
+        WHERE (h.isSubagent IS NULL OR h.isSubagent = 0)
+        ORDER BY COALESCE(h.lastUpdatedAt, h.createdAt, 0) DESC
+        LIMIT 120;
+      `;
+      const raw = execFileSync(
+        '/usr/bin/sqlite3',
+        ['-cmd', '.timeout 1000', '-separator', '|||', DESKTOP_STATE_DB_PATH, sql],
+        { encoding: 'utf8', timeout: 3000 },
+      );
+      for (const ln of raw.split(/\r?\n/)) {
+        if (!ln.trim()) continue;
+        const [cid, name, uatStr, catStr, modeStr, modelStr, cwdStr] = ln.split('|||');
+        if (!cid) continue;
+        const uat = Number(uatStr || 0);
+        const cat = Number(catStr || 0);
+        const cleanMode = (modeStr || 'agent').toLowerCase();
+        const mode: ExecutionMode =
+          cleanMode === 'plan' || cleanMode === 'ask' || cleanMode === 'debug' || cleanMode === 'multitask'
+            ? (cleanMode as ExecutionMode)
+            : 'agent';
+        out.set(cid.trim(), {
+          name: name?.trim() || undefined,
+          lastUpdatedAtMs: Number.isFinite(uat) && uat > 0 ? uat : undefined,
+          createdAtMs: Number.isFinite(cat) && cat > 0 ? cat : undefined,
+          mode,
+          model: modelStr?.trim() && modelStr.trim() !== 'default' ? modelStr.trim() : undefined,
+          cwd: cwdStr?.trim() || undefined,
+        });
+      }
+    } catch {
+      /* ignore if sqlite is busy */
+    }
+    return out;
+  }
+
+  /**
+   * Read `~/.cursor/chats/<workspaceHash>/<sessionId>/meta.json` for CLI-created chat cwds and timestamps.
+   */
+  private readCursorChatsMetaMap(): Map<string, { cwd?: string; updatedAtMs?: number; createdAtMs?: number }> {
+    const out = new Map<string, { cwd?: string; updatedAtMs?: number; createdAtMs?: number }>();
+    const chatsRoot = join(homedir(), '.cursor', 'chats');
+    if (!existsSync(chatsRoot)) return out;
+    try {
+      for (const wsHash of readdirSync(chatsRoot)) {
+        const wsDir = join(chatsRoot, wsHash);
+        let stat;
+        try {
+          stat = statSync(wsDir);
+        } catch {
+          continue;
+        }
+        if (!stat.isDirectory()) continue;
+        for (const sid of readdirSync(wsDir)) {
+          const metaPath = join(wsDir, sid, 'meta.json');
+          if (!existsSync(metaPath)) continue;
+          try {
+            const j = JSON.parse(readFileSync(metaPath, 'utf8'));
+            out.set(sid, {
+              cwd: typeof j?.cwd === 'string' ? j.cwd : undefined,
+              updatedAtMs: typeof j?.updatedAtMs === 'number' ? j.updatedAtMs : undefined,
+              createdAtMs: typeof j?.createdAtMs === 'number' ? j.createdAtMs : undefined,
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return out;
+  }
+
+  /**
+   * Sync ALL recent native `.jsonl` transcripts across `~/.cursor/projects/<slug>/agent-transcripts/`
+   * and enrich with Cursor Desktop IDE (`state.vscdb`) titles, models, modes, and timestamps
+   * so all local Mac chats appear in the app with the most recent ones at the top!
+   */
+  syncIdeTranscripts(maxTotal = 50): LocalAgent[] {
     const projectsRoot = join(homedir(), '.cursor', 'projects');
     if (!existsSync(projectsRoot)) return this.list();
-    const knownProjects = this.listProjects().slice(0, 6);
-    let added = false;
 
-    for (const proj of knownProjects) {
-      const slug = cwdToCursorProjectSlug(proj.path);
-      const transDir = join(projectsRoot, slug, 'agent-transcripts');
-      if (!existsSync(transDir)) continue;
-      try {
-        const dirs = readdirSync(transDir)
-          .map((id) => {
-            const jsonl = join(transDir, id, `${id}.jsonl`);
-            if (!existsSync(jsonl)) return null;
-            const st = statSync(jsonl);
-            return { id, jsonl, mtime: st.mtimeMs, iso: st.mtime.toISOString() };
-          })
-          .filter((x): x is { id: string; jsonl: string; mtime: number; iso: string } => Boolean(x))
-          .sort((a, b) => b.mtime - a.mtime)
-          .slice(0, maxPerWorkspace);
+    const knownProjects = this.listProjects();
+    const slugToPath = new Map<string, string>();
+    for (const p of knownProjects) {
+      slugToPath.set(cwdToCursorProjectSlug(p.path), p.path);
+    }
 
-        for (const item of dirs) {
-          if (this.agents.has(item.id) || this.deletedIds.has(item.id)) continue;
-          const parsed = parseCursorJsonlTranscript(item.id, item.jsonl);
-          if (!parsed.firstPrompt) continue;
-          this.agents.set(item.id, {
-            id: item.id,
-            name: parsed.firstPrompt.split(/\s+/).slice(0, 8).join(' ').slice(0, 80),
-            cwd: proj.path,
-            mode: 'agent',
-            createdAt: item.iso,
-            lastStatus: 'done',
-            lastActivityAt: item.iso,
-          });
-          added = true;
+    const ideMetaMap = this.readDesktopComposerMetadataMap();
+    const chatMetaMap = this.readCursorChatsMetaMap();
+
+    const candidates: {
+      id: string;
+      jsonl: string;
+      slug: string;
+      mtimeMs: number;
+      effectiveUpdatedMs: number;
+    }[] = [];
+
+    try {
+      for (const slug of readdirSync(projectsRoot)) {
+        if (slug.startsWith('private-tmp')) continue;
+        const transDir = join(projectsRoot, slug, 'agent-transcripts');
+        if (!existsSync(transDir)) continue;
+        let sessionDirs: string[] = [];
+        try {
+          sessionDirs = readdirSync(transDir);
+        } catch {
+          continue;
         }
-      } catch {
-        /* ignore */
+        for (const id of sessionDirs) {
+          if (this.deletedIds.has(id)) continue;
+          const jsonl = join(transDir, id, `${id}.jsonl`);
+          if (!existsSync(jsonl)) continue;
+          try {
+            const st = statSync(jsonl);
+            if (st.size < 40) continue;
+            const ideMeta = ideMetaMap.get(id);
+            const chatMeta = chatMetaMap.get(id);
+            const effectiveUpdatedMs = Math.max(
+              st.mtimeMs,
+              ideMeta?.lastUpdatedAtMs ?? 0,
+              chatMeta?.updatedAtMs ?? 0,
+            );
+            candidates.push({
+              id,
+              jsonl,
+              slug,
+              mtimeMs: st.mtimeMs,
+              effectiveUpdatedMs,
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    candidates.sort((a, b) => b.effectiveUpdatedMs - a.effectiveUpdatedMs);
+    const topCandidates = candidates.slice(0, Math.max(maxTotal, 45));
+
+    let changed = false;
+
+    for (const item of topCandidates) {
+      const ideMeta = ideMetaMap.get(item.id);
+      const chatMeta = chatMetaMap.get(item.id);
+      const parsed = parseCursorJsonlTranscript(item.id, item.jsonl);
+      if (parsed.events.length === 0) continue;
+
+      const resolvedCwd =
+        ideMeta?.cwd ||
+        chatMeta?.cwd ||
+        slugToPath.get(item.slug) ||
+        knownProjects[0]?.path ||
+        homedir();
+
+      const bestTitle =
+        ideMeta?.name ||
+        (parsed.firstPrompt
+          ? parsed.firstPrompt.split(/\s+/).slice(0, 8).join(' ').slice(0, 80)
+          : item.id);
+
+      const updatedIso = new Date(item.effectiveUpdatedMs).toISOString();
+      const createdIso = new Date(
+        ideMeta?.createdAtMs || chatMeta?.createdAtMs || item.mtimeMs,
+      ).toISOString();
+
+      const existing = this.agents.get(item.id);
+      if (existing) {
+        let itemChanged = false;
+        if (updatedIso > existing.lastActivityAt) {
+          existing.lastActivityAt = updatedIso;
+          itemChanged = true;
+        }
+        if (
+          bestTitle &&
+          existing.name !== bestTitle &&
+          (Boolean(ideMeta?.name) ||
+            existing.name.length <= 12 ||
+            /^(hey|yo|hi|switch|in repo|check|git account|scraper)$/i.test(existing.name.trim()))
+        ) {
+          existing.name = bestTitle;
+          itemChanged = true;
+        }
+        if (ideMeta?.mode && !existing.mode) {
+          existing.mode = ideMeta.mode;
+          itemChanged = true;
+        }
+        if (ideMeta?.model && !existing.model) {
+          existing.model = ideMeta.model;
+          itemChanged = true;
+        }
+        if (itemChanged) changed = true;
+      } else {
+        this.agents.set(item.id, {
+          id: item.id,
+          name: bestTitle,
+          cwd: resolvedCwd,
+          mode: ideMeta?.mode ?? 'agent',
+          model: ideMeta?.model,
+          createdAt: createdIso,
+          lastStatus: 'done',
+          lastActivityAt: updatedIso,
+        });
+        changed = true;
+      }
+
+      // Always keep the in-memory replay buffer warm with the latest parsed events from disk
+      if (!this.running.has(item.id)) {
+        this.recentEvents.set(
+          item.id,
+          parsed.events.slice(-LocalAgentService.EVENT_BUFFER),
+        );
       }
     }
-    if (added) this.save();
+
+    if (changed) {
+      this.save();
+      this.emit('changed', this.list());
+    }
     return this.list();
   }
 

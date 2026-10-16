@@ -740,6 +740,24 @@ export function parseCursorJsonlTranscript(
   const updatedAt = st.mtime.toISOString();
   const events: { agentId: string; raw: unknown; at: string }[] = [];
   let firstPrompt: string | undefined;
+  let substantivePrompt: string | undefined;
+  let turnAssistantTexts: string[] = [];
+
+  const flushTurnAssistant = () => {
+    if (turnAssistantTexts.length === 0) return;
+    const combined = turnAssistantTexts.join('\n\n').trim();
+    turnAssistantTexts = [];
+    if (combined) {
+      events.push({
+        agentId,
+        raw: {
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'text', text: combined }] },
+        },
+        at: updatedAt,
+      });
+    }
+  };
 
   try {
     const lines = readFileSync(jsonlPath, 'utf8').split(/\r?\n/);
@@ -751,19 +769,32 @@ export function parseCursorJsonlTranscript(
       } catch {
         continue;
       }
-      const role = j?.role;
+      const role = j?.role ?? j?.type;
       const content = Array.isArray(j?.message?.content) ? j.message.content : [];
       if (role === 'user') {
+        flushTurnAssistant();
         const rawText = content
           .filter((c: any) => c?.type === 'text')
           .map((c: any) => String(c.text ?? ''))
           .join('\n');
-        // Strip <timestamp>...</timestamp> and <user_query> wrappers added by Cursor IDE
+        // Strip <timestamp>...</timestamp>, <user_info>...</user_info>, and <user_query> wrappers added by Cursor IDE
         const queryMatch = /<user_query>\s*([\s\S]*?)\s*<\/user_query>/i.exec(rawText);
-        const cleanText = (queryMatch ? queryMatch[1] : rawText.replace(/<timestamp>[\s\S]*?<\/timestamp>/gi, ''))
-          .trim();
+        const cleanText = (
+          queryMatch
+            ? queryMatch[1]
+            : rawText
+                .replace(/<timestamp>[\s\S]*?<\/timestamp>/gi, '')
+                .replace(/<user_info>[\s\S]*?<\/user_info>/gi, '')
+        ).trim();
         if (cleanText) {
           if (!firstPrompt) firstPrompt = cleanText;
+          if (
+            !substantivePrompt &&
+            cleanText.length > 5 &&
+            !/^(hey|yo|hi|hello|ping|test|ok|yes)$/i.test(cleanText)
+          ) {
+            substantivePrompt = cleanText;
+          }
           events.push({
             agentId,
             raw: { type: 'cuss_user_turn', text: cleanText, mode: 'agent' },
@@ -773,8 +804,19 @@ export function parseCursorJsonlTranscript(
       } else if (role === 'assistant') {
         const texts: string[] = [];
         for (const c of content) {
-          if (c?.type === 'text' && c.text?.trim()) {
-            texts.push(String(c.text).replace(/\[REDACTED\]/g, '').trim());
+          if (c?.type === 'thinking' && c.thinking?.trim()) {
+            events.push({
+              agentId,
+              raw: {
+                type: 'thinking',
+                subtype: 'delta',
+                text: String(c.thinking).trim(),
+              },
+              at: updatedAt,
+            });
+          } else if (c?.type === 'text' && c.text?.trim()) {
+            const cleaned = String(c.text).replace(/\[REDACTED\]/g, '').trim();
+            if (cleaned) texts.push(cleaned);
           } else if (c?.type === 'tool_use') {
             const toolName = `${c.name ?? 'Tool'}ToolCall`;
             events.push({
@@ -795,21 +837,17 @@ export function parseCursorJsonlTranscript(
         }
         const joined = texts.filter(Boolean).join('\n\n');
         if (joined) {
-          events.push({
-            agentId,
-            raw: {
-              type: 'assistant',
-              message: { content: [{ type: 'text', text: joined }] },
-            },
-            at: updatedAt,
-          });
+          turnAssistantTexts.push(joined);
         }
+      } else if (role === 'turn_ended') {
+        flushTurnAssistant();
       }
     }
+    flushTurnAssistant();
   } catch {
     /* ignore malformed */
   }
-  return { events, firstPrompt, updatedAt };
+  return { events, firstPrompt: substantivePrompt ?? firstPrompt, updatedAt };
 }
 
 const IGNORED_DIRS = new Set([
