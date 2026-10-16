@@ -1,3 +1,4 @@
+import { File as ExpoFile, Paths } from 'expo-file-system';
 import {
   FALLBACK_FAMILIES,
   LocalAgent,
@@ -8,6 +9,111 @@ import {
 } from '../store';
 import type { ExecutionMode } from '../theme';
 import { emitLocalSyntheticMessage } from './live';
+
+export interface CachedWorkspaceFile {
+  path: string;
+  relativePath: string;
+  content: string;
+  size: number;
+}
+
+export interface DeviceWorkspaceCache {
+  cwd: string;
+  files: CachedWorkspaceFile[];
+  dirtyEdits: { cwd: string; path: string; content: string; updatedAt: string }[];
+  updatedAt: string;
+}
+
+function getWorkspaceCacheFile(): ExpoFile {
+  return new ExpoFile(Paths.document, 'cuss-workspace-cache-v1.json');
+}
+
+export function readDeviceWorkspaceCache(): DeviceWorkspaceCache {
+  try {
+    const f = getWorkspaceCacheFile();
+    if (!f.exists) {
+      return { cwd: '/workspace', files: [], dirtyEdits: [], updatedAt: '' };
+    }
+    const raw = f.textSync();
+    const parsed = raw ? JSON.parse(raw) : {};
+    return {
+      cwd: parsed?.cwd || '/workspace',
+      files: Array.isArray(parsed?.files) ? parsed.files : [],
+      dirtyEdits: Array.isArray(parsed?.dirtyEdits) ? parsed.dirtyEdits : [],
+      updatedAt: parsed?.updatedAt || '',
+    };
+  } catch {
+    return { cwd: '/workspace', files: [], dirtyEdits: [], updatedAt: '' };
+  }
+}
+
+export function saveDeviceWorkspaceSnapshot(cwd: string, files: CachedWorkspaceFile[]) {
+  try {
+    const prev = readDeviceWorkspaceCache();
+    const next: DeviceWorkspaceCache = {
+      cwd: cwd || prev.cwd,
+      files: Array.isArray(files) ? files : prev.files,
+      dirtyEdits: prev.dirtyEdits,
+      updatedAt: new Date().toISOString(),
+    };
+    getWorkspaceCacheFile().write(JSON.stringify(next));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function recordOfflineFileEdit(cwd: string, filePath: string, content: string) {
+  try {
+    const prev = readDeviceWorkspaceCache();
+    const absPath = filePath.startsWith('/') ? filePath : `${cwd.replace(/\/$/, '')}/${filePath}`;
+    const relPath = absPath.startsWith(cwd)
+      ? absPath.slice(cwd.length).replace(/^\//, '')
+      : filePath;
+    const files = [...prev.files];
+    const existingIdx = files.findIndex(
+      (f) => f.path === absPath || f.relativePath === relPath || f.path.endsWith(`/${relPath}`),
+    );
+    const entry: CachedWorkspaceFile = {
+      path: absPath,
+      relativePath: relPath,
+      content,
+      size: content.length,
+    };
+    if (existingIdx >= 0) files[existingIdx] = entry;
+    else files.unshift(entry);
+
+    const dirtyEdits = [
+      { cwd, path: absPath, content, updatedAt: new Date().toISOString() },
+      ...prev.dirtyEdits.filter((d) => d.path !== absPath),
+    ].slice(0, 50);
+
+    getWorkspaceCacheFile().write(
+      JSON.stringify({
+        cwd: cwd || prev.cwd,
+        files,
+        dirtyEdits,
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearSyncedOfflineFileEdits() {
+  try {
+    const prev = readDeviceWorkspaceCache();
+    if (prev.dirtyEdits.length === 0) return;
+    getWorkspaceCacheFile().write(
+      JSON.stringify({
+        ...prev,
+        dirtyEdits: [],
+      }),
+    );
+  } catch {
+    /* ignore */
+  }
+}
 
 /**
  * Pure-JS SHA-256 implementation for deterministic Worldwide Rendezvous Beacon topic derivation.
@@ -300,6 +406,79 @@ function buildKvAckClientMessageHex(kvId: number): string {
   ];
   // AgentClientMessage: 3=kv_client_message
   return bytesToHex(pbFieldBytes(3, kvClient));
+}
+
+function buildExecReadClientMessageHex(
+  id: number,
+  execId: string,
+  filePath: string,
+  content: string,
+): string {
+  const lines = content.split('\n').length;
+  // ReadSuccess: 1=path, 2=content, 3=total_lines, 4=file_size
+  const readSuccess = [
+    ...pbFieldBytes(1, filePath),
+    ...pbFieldBytes(2, content),
+    ...pbFieldVarint(3, lines),
+    ...pbFieldVarint(4, content.length),
+  ];
+  // ReadResult: 1=success
+  const readResult = pbFieldBytes(1, readSuccess);
+  // ExecClientMessage: 1=id, 15=exec_id, 7=read_result
+  const execClient = [
+    ...(id > 0 ? pbFieldVarint(1, id) : []),
+    ...(execId ? pbFieldBytes(15, execId) : []),
+    ...pbFieldBytes(7, readResult),
+  ];
+  // AgentClientMessage: 2=exec_client_message
+  return bytesToHex(pbFieldBytes(2, execClient));
+}
+
+function buildExecWriteClientMessageHex(
+  id: number,
+  execId: string,
+  filePath: string,
+  content: string,
+): string {
+  const lines = content.split('\n').length;
+  // WriteSuccess: 1=path, 2=lines_created, 3=file_size
+  const writeSuccess = [
+    ...pbFieldBytes(1, filePath),
+    ...pbFieldVarint(2, lines),
+    ...pbFieldVarint(3, content.length),
+  ];
+  // WriteResult: 1=success
+  const writeResult = pbFieldBytes(1, writeSuccess);
+  // ExecClientMessage: 1=id, 15=exec_id, 3=write_result
+  const execClient = [
+    ...(id > 0 ? pbFieldVarint(1, id) : []),
+    ...(execId ? pbFieldBytes(15, execId) : []),
+    ...pbFieldBytes(3, writeResult),
+  ];
+  // AgentClientMessage: 2=exec_client_message
+  return bytesToHex(pbFieldBytes(2, execClient));
+}
+
+function buildExecRequestContextClientMessageHex(
+  id: number,
+  execId: string,
+  cwd: string,
+): string {
+  const reqEnv = [
+    ...pbFieldBytes(1, 'darwin 24.6.0 (CUSS Autonomous Direct Cloud)'),
+    ...pbFieldBytes(2, cwd || '/workspace'),
+    ...pbFieldBytes(3, '/bin/zsh'),
+  ];
+  const reqCtx = pbFieldBytes(4, reqEnv);
+  const reqSuccess = pbFieldBytes(1, reqCtx);
+  const reqResult = pbFieldBytes(1, reqSuccess);
+  // ExecClientMessage: 1=id, 15=exec_id, 10=request_context_result
+  const execClient = [
+    ...(id > 0 ? pbFieldVarint(1, id) : []),
+    ...(execId ? pbFieldBytes(15, execId) : []),
+    ...pbFieldBytes(10, reqResult),
+  ];
+  return bytesToHex(pbFieldBytes(2, execClient));
 }
 
 async function callCursorConnectUnary<T = any>(
@@ -774,6 +953,73 @@ export async function runDirectPhoneCursorTurn(params: {
           if (!ackedKvIds.has(kvId)) {
             ackedKvIds.add(kvId);
             void sendBidiAppend(buildKvAckClientMessageHex(kvId));
+          }
+        }
+        if (obj?.execServerMessage) {
+          const esm = obj.execServerMessage;
+          const execMsgId = Number(esm.id ?? 0);
+          const execId = String(esm.execId ?? '');
+          const evtAt = new Date().toISOString();
+
+          const readArgs = esm.readArgs || esm.redactedReadArgs;
+          if (readArgs) {
+            const targetPath = String(readArgs.path ?? '');
+            const wsCache = readDeviceWorkspaceCache();
+            const matched = wsCache.files.find(
+              (f) =>
+                f.path === targetPath ||
+                f.relativePath === targetPath ||
+                f.path.endsWith(`/${targetPath}`),
+            );
+            const content =
+              matched?.content ??
+              `// File ${targetPath} is not in the offline device cache yet (syncs automatically when Mac is online).`;
+            const toolEvt = {
+              agentId,
+              raw: {
+                type: 'tool_call',
+                subtype: 'completed',
+                tool_call: {
+                  readToolCall: {
+                    args: { path: targetPath },
+                    result: { success: { totalLines: content.split('\n').length } },
+                  },
+                },
+              },
+              at: evtAt,
+            };
+            transcript.push(toolEvt);
+            emitLocalSyntheticMessage({ type: 'local:event', ...toolEvt });
+            void sendBidiAppend(
+              buildExecReadClientMessageHex(execMsgId, execId, targetPath, content),
+            );
+          } else if (esm.writeArgs) {
+            const targetPath = String(esm.writeArgs.path ?? '');
+            const fileText = String(esm.writeArgs.fileText ?? '');
+            recordOfflineFileEdit(cwd, targetPath, fileText);
+            const toolEvt = {
+              agentId,
+              raw: {
+                type: 'tool_call',
+                subtype: 'completed',
+                tool_call: {
+                  writeToolCall: {
+                    args: { path: targetPath, fileText },
+                    result: { success: { linesCreated: fileText.split('\n').length } },
+                  },
+                },
+              },
+              at: evtAt,
+            };
+            transcript.push(toolEvt);
+            emitLocalSyntheticMessage({ type: 'local:event', ...toolEvt });
+            void sendBidiAppend(
+              buildExecWriteClientMessageHex(execMsgId, execId, targetPath, fileText),
+            );
+          } else if (esm.requestContextArgs) {
+            void sendBidiAppend(
+              buildExecRequestContextClientMessageHex(execMsgId, execId, cwd),
+            );
           }
         }
         if (obj?.interactionUpdate) {

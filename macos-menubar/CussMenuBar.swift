@@ -94,9 +94,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         add(menu, "Pair Phone — Show QR Code & Control HUD…", #selector(showHudWindow), "p")
         add(menu, "Copy Mac Bridge URL (http://…:4040)", #selector(copyLanUrl), "c")
+        add(menu, "Copy Worldwide Tunnel URL (5G / Any Network)", #selector(copyTunnelUrl), "w")
         add(menu, "Copy Pairing Token", #selector(copyPairingToken), "t")
         if hasExpo { add(menu, "Copy Expo Go URL (exp://…:8081)", #selector(copyExpoUrl), "e") }
         menu.addItem(NSMenuItem.separator())
+        add(menu, "Enable Lid-Closed Clamshell Awake Mode…", #selector(enableLidClosedAwake), "")
+        add(menu, "Restore Normal Mac Lid Sleep…", #selector(disableLidClosedAwake), "")
         add(menu, "Sync Cursor Desktop Login Now", #selector(syncCursorAuthNow), "s")
         add(menu, "Restart Background Services", #selector(restartServices), "r")
         add(menu, "Open Accessibility Settings (for Live Keyboard echo)", #selector(openAccessibility), "")
@@ -299,11 +302,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func copyExpoUrl() { copy("exp://\(getLanIp()):8081") }
     @objc func copyLanUrl() { copy("http://\(getLanIp()):4040") }
+    @objc func copyTunnelUrl() { copy(getTunnelUrl() ?? "http://\(getLanIp()):4040") }
     @objc func copyPairingToken() { copy(getPairingToken()) }
     @objc func copyDeepLink() {
         let ip = getLanIp()
         let tok = getPairingToken()
         copy(pairingDeepLink(ip: ip, token: tok))
+    }
+
+    @objc func enableLidClosedAwake() {
+        let t = Process()
+        t.launchPath = "/usr/bin/osascript"
+        t.arguments = ["-e", "do shell script \"/usr/bin/pmset -a disablesleep 1\" with administrator privileges"]
+        try? t.run()
+    }
+
+    @objc func disableLidClosedAwake() {
+        let t = Process()
+        t.launchPath = "/usr/bin/osascript"
+        t.arguments = ["-e", "do shell script \"/usr/bin/pmset -a disablesleep 0\" with administrator privileges"]
+        try? t.run()
     }
 
     private func copy(_ s: String) {

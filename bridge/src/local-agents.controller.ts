@@ -104,9 +104,15 @@ export class LocalAgentsController {
     body?: {
       agents?: any[];
       transcripts?: Record<string, any[]>;
+      fileEdits?: { cwd?: string; path: string; content: string }[];
     },
   ) {
-    return this.local.syncFromDevice(body?.agents ?? [], body?.transcripts);
+    return this.local.syncFromDevice(body?.agents ?? [], body?.transcripts, body?.fileEdits);
+  }
+
+  @Get('workspace-snapshot')
+  workspaceSnapshot(@Query('cwd') cwd?: string) {
+    return this.local.getWorkspaceSnapshot(cwd?.trim() || undefined);
   }
 
   @Get('ide-state')
