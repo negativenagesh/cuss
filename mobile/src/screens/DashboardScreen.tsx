@@ -191,7 +191,11 @@ export default function DashboardScreen({ navigation }: any) {
             <X size={11} color={COLORS.amber} />
             <Text style={[styles.unlinkText, { color: COLORS.amber, fontSize: 9 }]}>OUT</Text>
           </SpringButton>
-          <SpringButton onPress={clearPairing} hitSlop={8} style={[styles.unlinkBtn, { paddingHorizontal: 7 }]}>
+          <SpringButton
+            onPress={() => navigation.navigate('Pair')}
+            hitSlop={8}
+            style={[styles.unlinkBtn, { paddingHorizontal: 7 }]}
+          >
             <Unplug size={11} color={COLORS.magenta} />
           </SpringButton>
         </View>

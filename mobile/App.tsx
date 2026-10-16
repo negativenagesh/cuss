@@ -4,8 +4,8 @@ import { NavigationContainer, DarkTheme, useNavigationContainerRef } from '@reac
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts } from 'expo-font';
-import { StyleSheet, Text, Vibration, View } from 'react-native';
-import { useStore } from './src/store';
+import { Linking, StyleSheet, Text, Vibration, View } from 'react-native';
+import { parsePairingInput, resolveAndVerifyPairing, useStore } from './src/store';
 import { COLORS, FONTS } from './src/theme';
 import { localList } from './src/api/client';
 import { LiveSocket } from './src/api/live';
@@ -26,6 +26,7 @@ export default function App() {
     token,
     hydrated,
     hydrate,
+    setPairing,
     setLocalAgents,
     completionNotice,
     dismissCompletionNotice,
@@ -49,6 +50,36 @@ export default function App() {
   useEffect(() => {
     void hydrate();
   }, []);
+
+  // Global deep-link listener so scanning a pairing QR in the phone Camera or Expo Go works even when already paired
+  useEffect(() => {
+    async function handleIncomingDeepLink(rawUrl: string | null) {
+      if (!rawUrl) return;
+      const lower = rawUrl.toLowerCase();
+      if (
+        !lower.startsWith('missioncontrol://') &&
+        !lower.startsWith('cuss://') &&
+        !lower.includes('/pair') &&
+        !lower.includes('token=')
+      ) {
+        return;
+      }
+      const parsed = parsePairingInput(rawUrl);
+      if (!parsed) return;
+      const res = await resolveAndVerifyPairing(parsed.bridgeUrl, parsed.token);
+      if (res.ok && res.bridgeUrl && res.token) {
+        await setPairing(res.bridgeUrl, res.token);
+      }
+    }
+
+    const sub = Linking.addEventListener('url', ({ url }) => {
+      void handleIncomingDeepLink(url);
+    });
+    Linking.getInitialURL().then((url) => {
+      if (url) void handleIncomingDeepLink(url);
+    });
+    return () => sub.remove();
+  }, [setPairing]);
 
   // Global background watcher so running agents continue tracking & notify when done even if user navigates away
   useEffect(() => {
@@ -161,6 +192,11 @@ export default function App() {
                 options={{
                   title: 'SPAWN AGENT',
                 }}
+              />
+              <Stack.Screen
+                name="Pair"
+                component={PairScreen}
+                options={{ headerShown: false }}
               />
             </>
           )}

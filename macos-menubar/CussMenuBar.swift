@@ -2,10 +2,38 @@ import Cocoa
 import CoreImage
 import Foundation
 
+/// Pixel-exact QR view that renders a CGImage with `.none` interpolation inside a generous white quiet zone.
+final class CrispQRView: NSView {
+    var cgImage: CGImage? {
+        didSet { needsDisplay = true }
+    }
+    var quietZone: CGFloat = 16
+
+    override var isOpaque: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.saveGState()
+        let path = CGPath(roundedRect: bounds, cornerWidth: 14, cornerHeight: 14, transform: nil)
+        ctx.addPath(path)
+        ctx.clip()
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(bounds)
+
+        if let img = cgImage {
+            ctx.interpolationQuality = .none
+            ctx.setShouldAntialias(false)
+            let qrRect = bounds.insetBy(dx: quietZone, dy: quietZone).integral
+            ctx.draw(img, in: qrRect)
+        }
+        ctx.restoreGState()
+    }
+}
+
 /// CUSS Menu Bar — native NSStatusBar companion for the CUSS Mac Bridge.
 /// Works both from a developer checkout and from the self-contained cuss.dmg install
 /// (`~/Library/Application Support/CUSS`), resolving paths through ~/.config/mission-control/install.json.
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var statusItem: NSStatusItem!
     var bridgeStatusItem: NSMenuItem!
     var expoStatusItem: NSMenuItem!
@@ -14,6 +42,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var hudWindow: NSWindow?
     var timer: Timer?
 
+    /// Which QR code is currently displayed in the single-QR high-contrast HUD:
+    /// 0 = CUSS App Pairing QR (`missioncontrol://pair?...`)
+    /// 1 = Expo Go QR (`exp://<ip>:8081`)
+    /// 2 = Universal Phone Camera HTTP QR (`http://<ip>:4040/api/pair?token=...`)
+    var qrMode: Int = 0
+    var cachedEmail: String = ""
+    let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+
+    let configDir = NSHomeDirectory() + "/.config/mission-control"
     let configPath = NSHomeDirectory() + "/.config/mission-control/config.json"
     let installPath = NSHomeDirectory() + "/.config/mission-control/install.json"
     let authJsonPath = NSHomeDirectory() + "/.cursor/auth.json"
@@ -30,7 +67,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dev = NSHomeDirectory() + "/Downloads/cuss"
         return FileManager.default.fileExists(atPath: dev) ? dev : NSHomeDirectory() + "/Library/Application Support/CUSS"
     }
-    var hasExpo: Bool { FileManager.default.fileExists(atPath: expoPlist) }
+    var hasExpo: Bool {
+        FileManager.default.fileExists(atPath: expoPlist) ||
+        FileManager.default.fileExists(atPath: cussHome + "/mobile/package.json")
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -64,9 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(menu, "Quit CUSS Menu Bar", #selector(quitApp), "q")
         statusItem.menu = menu
 
+        _ = getPairingToken()
         syncCursorAuth(force: false)
         refreshStatus()
-        timer = Timer.scheduledTimer(timeInterval: 4.0, target: self, selector: #selector(refreshStatus), userInfo: nil, repeats: true)
+        let t = Timer(timeInterval: 4.0, target: self, selector: #selector(refreshStatus), userInfo: nil, repeats: true)
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
     private func add(_ menu: NSMenu, _ title: String, _ sel: Selector, _ key: String) {
@@ -78,65 +121,132 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - System facts
 
     func getLanIp() -> String {
-        var addr = "127.0.0.1"
+        var en0Ip: String?
+        var otherEnIp: String?
+        var fallbackIp: String?
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return addr }
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return "127.0.0.1" }
         defer { freeifaddrs(ifaddr) }
-        var preferred: String?
+
         for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let flags = Int32(ptr.pointee.ifa_flags)
-            guard (flags & IFF_UP) != 0, (flags & IFF_LOOPBACK) == 0, let sa = ptr.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) else { continue }
+            guard (flags & IFF_UP) != 0,
+                  (flags & IFF_LOOPBACK) == 0,
+                  let sa = ptr.pointee.ifa_addr,
+                  sa.pointee.sa_family == UInt8(AF_INET) else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
                 let name = String(cString: ptr.pointee.ifa_name)
                 let ip = String(cString: host)
-                if name.hasPrefix("en") && preferred == nil { preferred = ip }
-                if addr == "127.0.0.1" { addr = ip }
+                if ip.hasPrefix("127.") || ip.hasPrefix("169.254.") { continue }
+                if name == "en0" && en0Ip == nil {
+                    en0Ip = ip
+                } else if name.hasPrefix("en") && otherEnIp == nil {
+                    otherEnIp = ip
+                } else if fallbackIp == nil {
+                    fallbackIp = ip
+                }
             }
         }
-        return preferred ?? addr
+        return en0Ip ?? otherEnIp ?? fallbackIp ?? "127.0.0.1"
     }
 
+    func getTailscaleIp() -> String? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let flags = Int32(ptr.pointee.ifa_flags)
+            guard (flags & IFF_UP) != 0,
+                  (flags & IFF_LOOPBACK) == 0,
+                  let sa = ptr.pointee.ifa_addr,
+                  sa.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+                let ip = String(cString: host)
+                if ip.hasPrefix("100.") { return ip }
+            }
+        }
+        return nil
+    }
+
+    /// Reads the pairing token from ~/.config/mission-control/config.json, generating and saving one if missing.
     func getPairingToken() -> String {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = json["pairingToken"] as? String else { return "" }
-        return token
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let token = json["pairingToken"] as? String,
+           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return token.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        var bytes = [UInt8](repeating: 0, count: 24)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let generated = bytes.map { String(format: "%02x", $0) }.joined()
+        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+        var obj: [String: Any] = ["port": 4040, "pairingToken": generated]
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            obj = existing
+            obj["pairingToken"] = generated
+            if obj["port"] == nil { obj["port"] = 4040 }
+        }
+        if let out = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
+            try? out.write(to: URL(fileURLWithPath: configPath))
+            chmod(configPath, 0o600)
+        }
+        return generated
     }
 
     func pairingDeepLink(ip: String, token: String) -> String {
-        let url = "http://\(ip):4040".addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+#?")
+        let url = "http://\(ip):4040".addingPercentEncoding(withAllowedCharacters: allowed) ?? "http%3A%2F%2F\(ip)%3A4040"
         return "missioncontrol://pair?url=\(url)&token=\(token)"
+    }
+
+    func universalHttpPairLink(ip: String, token: String) -> String {
+        return "http://\(ip):4040/api/pair?token=\(token)"
     }
 
     func queryStateDb(_ key: String) -> String {
         guard FileManager.default.fileExists(atPath: stateDbPath) else { return "" }
         let task = Process()
         task.launchPath = "/usr/bin/sqlite3"
-        task.arguments = [stateDbPath, "SELECT value FROM ItemTable WHERE key = '\(key)';"]
+        task.arguments = ["-cmd", ".timeout 400", stateDbPath, "SELECT value FROM ItemTable WHERE key = '\(key)';"]
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = Pipe()
-        try? task.run()
+        do {
+            try task.run()
+        } catch {
+            return ""
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
         return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func syncCursorAuth(force: Bool) {
-        let email = queryStateDb("cursorAuth/cachedEmail")
-        let access = queryStateDb("cursorAuth/accessToken")
-        let refresh = queryStateDb("cursorAuth/refreshToken")
-        if !access.isEmpty && !refresh.isEmpty && (force || !FileManager.default.fileExists(atPath: authJsonPath)) {
-            try? FileManager.default.createDirectory(atPath: NSHomeDirectory() + "/.cursor", withIntermediateDirectories: true)
-            if let data = try? JSONSerialization.data(withJSONObject: ["accessToken": access, "refreshToken": refresh], options: [.prettyPrinted]) {
-                try? data.write(to: URL(fileURLWithPath: authJsonPath))
-                chmod(authJsonPath, 0o600)
+        DispatchQueue.global(qos: .utility).async {
+            let email = self.queryStateDb("cursorAuth/cachedEmail")
+            let access = self.queryStateDb("cursorAuth/accessToken")
+            let refresh = self.queryStateDb("cursorAuth/refreshToken")
+            if !access.isEmpty && !refresh.isEmpty && (force || !FileManager.default.fileExists(atPath: self.authJsonPath)) {
+                try? FileManager.default.createDirectory(atPath: NSHomeDirectory() + "/.cursor", withIntermediateDirectories: true)
+                if let data = try? JSONSerialization.data(withJSONObject: ["accessToken": access, "refreshToken": refresh], options: [.prettyPrinted]) {
+                    try? data.write(to: URL(fileURLWithPath: self.authJsonPath))
+                    chmod(self.authJsonPath, 0o600)
+                }
             }
-        }
-        DispatchQueue.main.async {
-            if !email.isEmpty { self.authMenuItem.title = "✓ Cursor: \(email)" }
-            else if FileManager.default.fileExists(atPath: self.authJsonPath) { self.authMenuItem.title = "✓ Cursor: signed in (~/.cursor/auth.json)" }
-            else { self.authMenuItem.title = "○ Cursor: sign in from the phone app or open Cursor.app" }
+            DispatchQueue.main.async {
+                if !email.isEmpty {
+                    self.cachedEmail = email
+                    self.authMenuItem.title = "✓ Cursor: \(email)"
+                } else if FileManager.default.fileExists(atPath: self.authJsonPath) {
+                    self.authMenuItem.title = "✓ Cursor: signed in (~/.cursor/auth.json)"
+                } else {
+                    self.authMenuItem.title = "○ Cursor: sign in from the phone app or open Cursor.app"
+                }
+            }
         }
     }
 
@@ -173,6 +283,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func copyExpoUrl() { copy("exp://\(getLanIp()):8081") }
     @objc func copyLanUrl() { copy("http://\(getLanIp()):4040") }
     @objc func copyPairingToken() { copy(getPairingToken()) }
+    @objc func copyDeepLink() {
+        let ip = getLanIp()
+        let tok = getPairingToken()
+        copy(pairingDeepLink(ip: ip, token: tok))
+    }
+
     private func copy(_ s: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(s, forType: .string)
@@ -196,86 +312,259 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openLogs() { NSWorkspace.shared.open(URL(fileURLWithPath: "/tmp/cuss-bridge.log")) }
 
-    func qrImage(_ string: String, size: CGFloat) -> NSImage? {
-        guard let data = string.data(using: .utf8), let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+    /// Produces a razor-sharp, pure black-on-white rasterized CGImage for QR scanning with zero interpolation blur.
+    func qrCGImage(_ string: String, targetDimension: CGFloat = 440) -> CGImage? {
+        guard let data = string.data(using: .utf8),
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         filter.setValue(data, forKey: "inputMessage")
         filter.setValue("M", forKey: "inputCorrectionLevel")
-        guard let ci = filter.outputImage else { return nil }
-        let scale = size / ci.extent.size.width
-        let rep = NSCIImageRep(ciImage: ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale)))
-        let img = NSImage(size: rep.size)
-        img.addRepresentation(rep)
-        return img
+        guard let rawCi = filter.outputImage else { return nil }
+
+        let colorFilter = CIFilter(name: "CIFalseColor")
+        colorFilter?.setValue(rawCi, forKey: kCIInputImageKey)
+        colorFilter?.setValue(CIColor(red: 0, green: 0, blue: 0, alpha: 1), forKey: "inputColor0")
+        colorFilter?.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor1")
+        let coloredCi = colorFilter?.outputImage ?? rawCi
+
+        let extent = coloredCi.extent.integral
+        guard extent.width > 0, extent.height > 0 else { return nil }
+        let intScale = max(10, Int(ceil(targetDimension / extent.width)))
+        let scaledCi = coloredCi
+            .samplingNearest()
+            .transformed(by: CGAffineTransform(scaleX: CGFloat(intScale), y: CGFloat(intScale)))
+        return ciContext.createCGImage(scaledCi, from: scaledCi.extent.integral)
+    }
+
+    @objc func selectQrModeCuss() {
+        qrMode = 0
+        renderHudContents()
+    }
+
+    @objc func selectQrModeExpo() {
+        qrMode = 1
+        renderHudContents()
+    }
+
+    @objc func selectQrModeCamera() {
+        qrMode = 2
+        renderHudContents()
+    }
+
+    @objc func refreshHudNow() {
+        syncCursorAuth(force: false)
+        renderHudContents()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // Keep hudWindow reusable (isReleasedWhenClosed = false)
     }
 
     @objc func showHudWindow() {
-        let ip = getLanIp()
-        let tok = getPairingToken()
-        let email = queryStateDb("cursorAuth/cachedEmail")
-        let pairLink = pairingDeepLink(ip: ip, token: tok)
-        let expoUri = "exp://\(ip):8081"
-        let showExpo = hasExpo
-
-        let W: CGFloat = showExpo ? 760 : 560
+        let W: CGFloat = 680
+        let H: CGFloat = 410
         if hudWindow == nil {
-            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: W, height: 340), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let win = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: W, height: H),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
             win.title = "⚡ CUSS // PAIR YOUR PHONE"
             win.backgroundColor = NSColor(calibratedRed: 0.03, green: 0.03, blue: 0.05, alpha: 1.0)
+            win.isReleasedWhenClosed = false
+            win.isMovableByWindowBackground = true
+            win.level = .floating
+            win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .moveToActiveSpace]
+            win.delegate = self
             win.center()
             hudWindow = win
         }
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: W, height: 340))
 
-        func qrBox(_ s: String, x: CGFloat, caption: String, color: NSColor) {
-            if let img = qrImage(s, size: 170) {
-                let box = NSView(frame: NSRect(x: x, y: 96, width: 186, height: 186))
-                box.wantsLayer = true
-                box.layer?.backgroundColor = NSColor.white.cgColor
-                box.layer?.cornerRadius = 12
-                let iv = NSImageView(frame: NSRect(x: 8, y: 8, width: 170, height: 170))
-                iv.image = img
-                box.addSubview(iv)
-                content.addSubview(box)
-            }
-            let cap = NSTextField(wrappingLabelWithString: caption)
-            cap.font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .bold)
-            cap.textColor = color
-            cap.alignment = .center
-            cap.frame = NSRect(x: x - 10, y: 58, width: 206, height: 34)
-            content.addSubview(cap)
+        renderHudContents()
+
+        // Present immediately and re-assert on next main runloop tick after NSMenu finishes closing
+        presentHudWindowNow()
+        DispatchQueue.main.async {
+            self.presentHudWindowNow()
+        }
+    }
+
+    private func presentHudWindowNow() {
+        guard let win = hudWindow else { return }
+        if !win.isVisible {
+            win.center()
+        }
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        win.makeKeyAndOrderFront(nil)
+        win.orderFrontRegardless()
+    }
+
+    private func makeActionButton(title: String, frame: NSRect, active: Bool, accent: NSColor, action: Selector) -> NSButton {
+        let btn = NSButton(frame: frame)
+        btn.isBordered = false
+        btn.wantsLayer = true
+        btn.layer?.cornerRadius = 8
+        btn.layer?.borderWidth = 1.5
+        btn.layer?.borderColor = accent.cgColor
+        btn.layer?.backgroundColor = active
+            ? accent.cgColor
+            : NSColor(calibratedRed: 0.07, green: 0.08, blue: 0.12, alpha: 1.0).cgColor
+        let fg = active ? NSColor(calibratedRed: 0.03, green: 0.03, blue: 0.05, alpha: 1.0) : accent
+        btn.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: .bold),
+                .foregroundColor: fg,
+            ]
+        )
+        btn.target = self
+        btn.action = action
+        return btn
+    }
+
+    func renderHudContents() {
+        guard let win = hudWindow else { return }
+        let W: CGFloat = 680
+        let H: CGFloat = 410
+        let ip = getLanIp()
+        let tailscaleIp = getTailscaleIp()
+        let tok = getPairingToken()
+        let pairLink = pairingDeepLink(ip: ip, token: tok)
+        let expoUri = "exp://\(ip):8081"
+        let httpPairUri = universalHttpPairLink(ip: ip, token: tok)
+
+        let lime = NSColor(calibratedRed: 0.83, green: 1.0, blue: 0.0, alpha: 1.0)
+        let cyan = NSColor(calibratedRed: 0.0, green: 0.94, blue: 1.0, alpha: 1.0)
+        let bone = NSColor(calibratedRed: 0.96, green: 0.94, blue: 0.92, alpha: 1.0)
+        let muted = NSColor(calibratedRed: 0.58, green: 0.62, blue: 0.75, alpha: 1.0)
+
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: W, height: H))
+        content.wantsLayer = true
+        content.layer?.backgroundColor = NSColor(calibratedRed: 0.03, green: 0.03, blue: 0.05, alpha: 1.0).cgColor
+
+        // Mode switcher tabs at top so only ONE large high-contrast QR is shown at a time (prevents dual-QR camera confusion)
+        let tabY: CGFloat = H - 46
+        content.addSubview(makeActionButton(
+            title: "1 · CUSS APP QR",
+            frame: NSRect(x: 24, y: tabY, width: 142, height: 28),
+            active: qrMode == 0,
+            accent: lime,
+            action: #selector(selectQrModeCuss)
+        ))
+        content.addSubview(makeActionButton(
+            title: "2 · EXPO GO QR",
+            frame: NSRect(x: 174, y: tabY, width: 136, height: 28),
+            active: qrMode == 1,
+            accent: cyan,
+            action: #selector(selectQrModeExpo)
+        ))
+        content.addSubview(makeActionButton(
+            title: "3 · PHONE CAMERA",
+            frame: NSRect(x: 318, y: tabY, width: 148, height: 28),
+            active: qrMode == 2,
+            accent: lime,
+            action: #selector(selectQrModeCamera)
+        ))
+        content.addSubview(makeActionButton(
+            title: "↻ REFRESH",
+            frame: NSRect(x: W - 116, y: tabY, width: 92, height: 28),
+            active: false,
+            accent: cyan,
+            action: #selector(refreshHudNow)
+        ))
+
+        let activePayload: String
+        let activeCaption: String
+        let activeColor: NSColor
+        switch qrMode {
+        case 1:
+            activePayload = expoUri
+            activeCaption = "EXPO GO QR · SCAN IN EXPO GO OR CAMERA\n\(expoUri)"
+            activeColor = cyan
+        case 2:
+            activePayload = httpPairUri
+            activeCaption = "UNIVERSAL CAMERA QR · OPENS EXPO GO OR CUSS\n\(httpPairUri)"
+            activeColor = lime
+        default:
+            activePayload = pairLink
+            activeCaption = "CUSS APP PAIRING QR · SCAN IN CUSS APP\nhttp://\(ip):4040"
+            activeColor = lime
         }
 
-        qrBox(pairLink, x: 22, caption: "1 · SCAN IN THE CUSS APP\nPAIR WITH THIS MAC", color: NSColor(calibratedRed: 0.83, green: 1.0, blue: 0.0, alpha: 1.0))
-        if showExpo {
-            qrBox(expoUri, x: 232, caption: "DEV · SCAN WITH EXPO GO\n\(expoUri)", color: NSColor(calibratedRed: 0.0, green: 0.94, blue: 1.0, alpha: 1.0))
-        }
+        // Large single 248x248 pure-white quiet-zone QR box (zero blur, integer module scaling)
+        let qrBoxSize: CGFloat = 248
+        let qrView = CrispQRView(frame: NSRect(x: 24, y: 94, width: qrBoxSize, height: qrBoxSize))
+        qrView.quietZone = 18
+        qrView.cgImage = qrCGImage(activePayload, targetDimension: 480)
+        content.addSubview(qrView)
 
-        let infoX: CGFloat = showExpo ? 440 : 230
-        let info = NSTextField(wrappingLabelWithString: """
-        ⚡ CUSS — ZERO-TERMINAL CONTROL DECK
+        let cap = NSTextField(wrappingLabelWithString: activeCaption)
+        cap.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
+        cap.textColor = activeColor
+        cap.alignment = .center
+        cap.frame = NSRect(x: 16, y: 46, width: qrBoxSize + 16, height: 40)
+        content.addSubview(cap)
 
-        MAC BRIDGE
-        http://\(ip):4040
+        // Right-hand telemetry & quick-copy controls
+        let infoX: CGFloat = 296
+        let infoW: CGFloat = W - infoX - 24
+
+        let header = NSTextField(labelWithString: "⚡ CUSS — ZERO-TERMINAL CONTROL DECK")
+        header.font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .bold)
+        header.textColor = lime
+        header.frame = NSRect(x: infoX, y: 318, width: infoW, height: 22)
+        content.addSubview(header)
+
+        let tailscaleLine = tailscaleIp != nil ? "\nTAILSCALE BRIDGE\nhttp://\(tailscaleIp!):4040" : ""
+        let details = NSTextField(wrappingLabelWithString: """
+        MAC BRIDGE (LAN WI-FI)
+        http://\(ip):4040\(tailscaleLine)
+
+        EXPO GO DEV SERVER
+        \(expoUri)
 
         PAIRING TOKEN
         \(tok)
 
         CURSOR ACCOUNT
-        \(email.isEmpty ? "sign in from the phone app" : email)
-
-        Bridge runs in the background on login.
-        Install cuss.apk on Android, open it, tap
-        SCAN, and point at the lime QR code.
+        \(cachedEmail.isEmpty ? "sign in from the phone app" : cachedEmail)
         """)
-        info.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
-        info.textColor = NSColor(calibratedRed: 0.83, green: 1.0, blue: 0.0, alpha: 1.0)
-        info.frame = NSRect(x: infoX, y: 22, width: W - infoX - 20, height: 300)
-        content.addSubview(info)
+        details.isSelectable = true
+        details.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        details.textColor = bone
+        details.frame = NSRect(x: infoX, y: 146, width: infoW, height: 166)
+        content.addSubview(details)
 
-        hudWindow?.setContentSize(NSSize(width: W, height: 340))
-        hudWindow?.contentView = content
-        hudWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        let hint = NSTextField(wrappingLabelWithString: """
+        TIP: Inside the CUSS mobile app, tap PAIRING / SCAN QR and point at ANY of the 3 QR tabs above — CUSS recognizes all three formats automatically!
+        """)
+        hint.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        hint.textColor = muted
+        hint.frame = NSRect(x: infoX, y: 92, width: infoW, height: 48)
+        content.addSubview(hint)
+
+        // Quick copy buttons inside the HUD
+        content.addSubview(makeActionButton(
+            title: "COPY BRIDGE URL",
+            frame: NSRect(x: infoX, y: 50, width: 168, height: 30),
+            active: false,
+            accent: lime,
+            action: #selector(copyLanUrl)
+        ))
+        content.addSubview(makeActionButton(
+            title: "COPY TOKEN",
+            frame: NSRect(x: infoX + 178, y: 50, width: 168, height: 30),
+            active: false,
+            accent: cyan,
+            action: #selector(copyPairingToken)
+        ))
+
+        win.setContentSize(NSSize(width: W, height: H))
+        win.contentView = content
     }
 
     @objc func quitApp() { NSApp.terminate(nil) }

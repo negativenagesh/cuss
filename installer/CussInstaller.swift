@@ -218,8 +218,11 @@ final class Installer {
                 var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                 if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
                     let name = String(cString: ptr.pointee.ifa_name)
-                    if name.hasPrefix("en") { ip = String(cString: host); break }
-                    if ip == "127.0.0.1" { ip = String(cString: host) }
+                    let candidate = String(cString: host)
+                    if candidate.hasPrefix("127.") || candidate.hasPrefix("169.254.") { continue }
+                    if name == "en0" { ip = candidate; break }
+                    if name.hasPrefix("en") && ip == "127.0.0.1" { ip = candidate }
+                    if ip == "127.0.0.1" { ip = candidate }
                 }
             }
         }
@@ -227,7 +230,9 @@ final class Installer {
         if let d = try? Data(contentsOf: URL(fileURLWithPath: configDir + "/config.json")), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
             token = j["pairingToken"] as? String ?? ""
         }
-        let enc = "http://\(ip):4040".addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+#?")
+        let enc = "http://\(ip):4040".addingPercentEncoding(withAllowedCharacters: allowed) ?? "http%3A%2F%2F\(ip)%3A4040"
         return (ip, token, "missioncontrol://pair?url=\(enc)&token=\(token)")
     }
 }
@@ -691,12 +696,19 @@ final class InstallerView: NSView {
         guard let data = string.data(using: .utf8), let f = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         f.setValue(data, forKey: "inputMessage")
         f.setValue("M", forKey: "inputCorrectionLevel")
-        guard let ci = f.outputImage else { return nil }
-        let scale = size / ci.extent.width
-        let rep = NSCIImageRep(ciImage: ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale)))
-        let img = NSImage(size: rep.size)
-        img.addRepresentation(rep)
-        return img
+        guard let rawCi = f.outputImage else { return nil }
+        let colorFilter = CIFilter(name: "CIFalseColor")
+        colorFilter?.setValue(rawCi, forKey: kCIInputImageKey)
+        colorFilter?.setValue(CIColor(red: 0, green: 0, blue: 0, alpha: 1), forKey: "inputColor0")
+        colorFilter?.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor1")
+        let ci = colorFilter?.outputImage ?? rawCi
+        let extent = ci.extent.integral
+        guard extent.width > 0 else { return nil }
+        let intScale = max(10, Int(ceil((size * 2.0) / extent.width)))
+        let scaled = ci.samplingNearest().transformed(by: CGAffineTransform(scaleX: CGFloat(intScale), y: CGFloat(intScale)))
+        let ctx = CIContext(options: [.useSoftwareRenderer: false])
+        guard let cg = ctx.createCGImage(scaled, from: scaled.extent.integral) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: size, height: size))
     }
 }
 

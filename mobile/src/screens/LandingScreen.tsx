@@ -589,7 +589,10 @@ export default function LandingScreen({ navigation }: any) {
               <Text style={styles.signOutChipText}>SIGN OUT</Text>
             </SpringButton>
           ) : null}
-          <SpringButton style={styles.unlinkChip} onPress={clearPairing}>
+          <SpringButton
+            style={styles.unlinkChip}
+            onPress={() => navigation.navigate('Pair')}
+          >
             <Unplug size={12} color={COLORS.magenta} />
             <Text style={styles.unlinkChipText}>PAIRING</Text>
           </SpringButton>

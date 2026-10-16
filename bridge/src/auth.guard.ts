@@ -14,7 +14,14 @@ export class PairingAuthGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest();
     const path: string = req.path ?? req.url ?? '';
-    if (path === '/api/health' || path === '/api/auto-pair') return true;
+    if (
+      path === '/api/health' ||
+      path === '/api/auto-pair' ||
+      path === '/api/pair' ||
+      path.startsWith('/api/pair?')
+    ) {
+      return true;
+    }
 
     const header: string | undefined = req.headers?.authorization;
     const fromHeader = header?.startsWith('Bearer ') ? header.slice(7) : undefined;
