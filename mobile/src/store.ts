@@ -35,6 +35,202 @@ function isPrivateLanUrl(url: string | null | undefined): boolean {
   return /^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)/i.test(url.trim());
 }
 
+function safeDecodeURIComponent(val: string): string {
+  try {
+    return decodeURIComponent(val.replace(/\+/g, ' '));
+  } catch {
+    return val;
+  }
+}
+
+function normalizeBridgeOrigin(input: string): string | null {
+  let clean = String(input ?? '').trim();
+  if (!clean) return null;
+  if (!/^https?:\/\//i.test(clean)) {
+    clean = `http://${clean}`;
+  }
+  const m = clean.match(/^(https?:\/\/[^/?#]+)/i);
+  if (!m) return null;
+  let origin = m[1].replace(/\/$/, '');
+  // If user scanned an Expo Metro URL on :8081, point bridge origin to :4040
+  if (/:8081$/.test(origin)) {
+    origin = origin.replace(/:8081$/, ':4040');
+  } else if (!/:\d+$/.test(origin) && /^http:\/\//i.test(origin)) {
+    origin = `${origin}:4040`;
+  }
+  return origin;
+}
+
+/**
+ * Universal QR & Deep-Link parser for CUSS pairing.
+ * Accepts:
+ *  - `missioncontrol://pair?url=http%3A%2F%2F10.10.0.132%3A4040&token=...`
+ *  - `cuss://pair?url=...&token=...`
+ *  - `exp://10.10.0.132:8081` or `exp://10.10.0.132:8081/--/pair?url=...&token=...`
+ *  - `http://10.10.0.132:4040/api/pair?token=...` or `http://10.10.0.132:4040`
+ *  - JSON `{"url":"http://...","token":"..."}`
+ *  - Bare IP / host:port `10.10.0.132` or `10.10.0.132:4040`
+ */
+export function parsePairingInput(
+  rawInput: string | null | undefined,
+): { bridgeUrl: string; token?: string } | null {
+  const raw = String(rawInput ?? '').trim();
+  if (!raw) return null;
+
+  // 1. JSON object payload
+  if (raw.startsWith('{') && raw.endsWith('}')) {
+    try {
+      const obj = JSON.parse(raw);
+      const u = normalizeBridgeOrigin(obj?.url ?? obj?.bridgeUrl ?? '');
+      const t = typeof obj?.token === 'string' && obj.token.trim() ? obj.token.trim() : undefined;
+      if (u) return { bridgeUrl: u, token: t };
+    } catch {
+      /* continue */
+    }
+  }
+
+  // Extract query parameters manually (safe across custom schemes in React Native / Hermes)
+  const params: Record<string, string> = {};
+  const qIdx = raw.indexOf('?');
+  if (qIdx !== -1) {
+    const queryStr = raw.slice(qIdx + 1).split('#')[0];
+    for (const part of queryStr.split('&')) {
+      if (!part) continue;
+      const eqIdx = part.indexOf('=');
+      if (eqIdx === -1) continue;
+      const k = safeDecodeURIComponent(part.slice(0, eqIdx)).trim();
+      const v = safeDecodeURIComponent(part.slice(eqIdx + 1)).trim();
+      if (k) params[k] = v;
+    }
+  }
+
+  const tokenFromQuery = params.token || params.pairingToken || undefined;
+
+  // 2. Explicit ?url= parameter (e.g. missioncontrol://pair?url=...&token=... or exp://.../--/pair?url=...)
+  if (params.url) {
+    const decodedUrl = safeDecodeURIComponent(params.url);
+    const origin = normalizeBridgeOrigin(decodedUrl);
+    if (origin) {
+      return { bridgeUrl: origin, token: tokenFromQuery };
+    }
+  }
+
+  // 3. Expo Go URL (`exp://10.10.0.132:8081...` or `exps://...`)
+  if (/^exps?:\/\//i.test(raw)) {
+    const hostPart = raw
+      .replace(/^exps?:\/\//i, '')
+      .split('/')[0]
+      .split('?')[0]
+      .split(':')[0]
+      .trim();
+    // Only auto-convert to bridge URL if this is an actual pairing link or a plain Expo QR scan
+    if (hostPart && (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostPart) || /^[a-zA-Z0-9.-]+$/.test(hostPart))) {
+      return {
+        bridgeUrl: `http://${hostPart}:4040`,
+        token: tokenFromQuery,
+      };
+    }
+  }
+
+  // 4. HTTP / HTTPS URL (`http://10.10.0.132:4040/api/pair?token=...` or `http://10.10.0.132:4040`)
+  if (/^https?:\/\//i.test(raw)) {
+    const origin = normalizeBridgeOrigin(raw);
+    if (origin) {
+      return { bridgeUrl: origin, token: tokenFromQuery };
+    }
+  }
+
+  // 5. Bare IPv4 address (`10.10.0.132` or `10.10.0.132:4040`)
+  if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(raw)) {
+    const origin = normalizeBridgeOrigin(raw);
+    if (origin) {
+      return { bridgeUrl: origin, token: tokenFromQuery };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Probes candidate Mac Bridge URL(s), resolves the pairing token automatically via `/api/auto-pair`
+ * when not explicitly provided (e.g. when scanning an Expo Go QR or clicking Auto-Pair),
+ * and verifies that the bridge is healthy.
+ */
+export async function resolveAndVerifyPairing(
+  candidateUrl?: string | null,
+  candidateToken?: string | null,
+): Promise<{
+  ok: boolean;
+  bridgeUrl?: string;
+  token?: string;
+  message: string;
+}> {
+  const candidates: string[] = [];
+  const primary = candidateUrl ? normalizeBridgeOrigin(candidateUrl) : null;
+  if (primary) candidates.push(primary);
+  const liveDetected = detectLiveMacBridgeUrl();
+  if (liveDetected && !candidates.includes(liveDetected)) {
+    candidates.push(liveDetected);
+  }
+
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      message: 'No Mac Bridge address provided. Scan the Mac QR code or enter http://<MAC_IP>:4040.',
+    };
+  }
+
+  const cleanInitialToken = candidateToken ? String(candidateToken).trim() : '';
+
+  for (const base of candidates) {
+    try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 5000);
+      const res = await fetch(`${base}/api/auto-pair`, { signal: ac.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const j = await res.json();
+        const resolvedToken = cleanInitialToken || (j?.token ? String(j.token).trim() : '');
+        if (j?.ok && resolvedToken) {
+          return {
+            ok: true,
+            bridgeUrl: base,
+            token: resolvedToken,
+            message: `LINK ESTABLISHED // BRIDGE v${j.version ?? '0.5.0'} (${base.replace(/^https?:\/\//, '')})`,
+          };
+        }
+      }
+    } catch {
+      /* fallback to /api/health below */
+    }
+
+    try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 5000);
+      const res = await fetch(`${base}/api/health`, { signal: ac.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const j = await res.json();
+        if (j?.ok && cleanInitialToken) {
+          return {
+            ok: true,
+            bridgeUrl: base,
+            token: cleanInitialToken,
+            message: `LINK ESTABLISHED // BRIDGE v${j.version ?? '0.5.0'} (${base.replace(/^https?:\/\//, '')})`,
+          };
+        }
+      }
+    } catch {
+      /* try next candidate */
+    }
+  }
+
+  return {
+    ok: false,
+    message: `Cannot reach Mac bridge at ${candidates[0]} (check same Wi-Fi / Tailscale IP / port 4040)`,
+  };
+}
+
 export interface Agent {
   id: string;
   name: string;

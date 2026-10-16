@@ -11,6 +11,7 @@ import Svg, { Circle, Path, Polygon, Rect } from 'react-native-svg';
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   ArrowUpRight,
   AtSign,
   Bot,
@@ -49,6 +50,7 @@ import {
   Terminal,
   Trash2,
   Unplug,
+  Wifi,
   X,
   Zap,
 } from 'lucide-react-native';
@@ -233,6 +235,7 @@ export function CussContextRing({
 export {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   ArrowUpRight,
   AtSign,
   Bot,
@@ -271,6 +274,7 @@ export {
   Terminal,
   Trash2,
   Unplug,
+  Wifi,
   X,
   Zap,
 };

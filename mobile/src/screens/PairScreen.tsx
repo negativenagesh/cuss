@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -8,88 +8,184 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  Vibration,
   View,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import {
   AlertTriangle,
+  ArrowLeft,
   Check,
   Laptop,
   QrCode,
+  RefreshCw,
   Sparkles,
   SpringButton,
+  Wifi,
 } from '../components/CussIcons';
 import { CussCyberOrbLottie, CussHazardStrip, CussSmallArtLoader } from '../components/CussArt';
-import { detectLiveMacBridgeUrl, useStore } from '../store';
+import {
+  detectLiveMacBridgeUrl,
+  parsePairingInput,
+  resolveAndVerifyPairing,
+  useStore,
+} from '../store';
 import { COLORS, FONTS } from '../theme';
 
-/** Verify the bridge answers before saving anything (prevents silent bad URLs). */
-async function verifyBridge(url: string): Promise<{ ok: boolean; message: string }> {
-  try {
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), 8000);
-    const res = await fetch(`${url.replace(/\/$/, '')}/api/health`, { signal: ac.signal });
-    clearTimeout(t);
-    if (!res.ok) return { ok: false, message: `Bridge answered with HTTP ${res.status}` };
-    const j = await res.json();
-    return j?.ok
-      ? { ok: true, message: `LINK ESTABLISHED // BRIDGE v${j.version ?? '0.2'}` }
-      : { ok: false, message: 'Endpoint is not a CUSS Mac bridge' };
-  } catch {
-    return {
-      ok: false,
-      message: 'Cannot reach bridge at that address (check Wi-Fi / Tailscale IP / port 4040)',
-    };
-  }
-}
-
-export default function PairScreen() {
+export default function PairScreen({ navigation }: any) {
   const setPairing = useStore((s) => s.setPairing);
+  const existingBridgeUrl = useStore((s) => s.bridgeUrl);
+  const existingToken = useStore((s) => s.token);
   const [permission, requestPermission] = useCameraPermissions();
   const [manual, setManual] = useState(false);
-  const [url, setUrl] = useState(() => detectLiveMacBridgeUrl() ?? 'http://10.10.0.160:4040');
-  const [token, setToken] = useState('');
-  const [scanned, setScanned] = useState(false);
+  const [url, setUrl] = useState(
+    () => detectLiveMacBridgeUrl() ?? existingBridgeUrl ?? 'http://10.10.0.132:4040',
+  );
+  const [token, setToken] = useState(() => existingToken ?? '');
+  const [cameraKey, setCameraKey] = useState(0);
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [checking, setChecking] = useState(false);
 
+  // Use a ref lock instead of unbinding `onBarcodeScanned` so ExpoCamera's native
+  // `barcodeScannerEnabled` prop stays `true` continuously without tearing down CameraX/AVFoundation.
+  const scanLockRef = useRef(false);
+  const lastInvalidScanRef = useRef<{ raw: string; at: number }>({ raw: '', at: 0 });
+
+  const connectWithCredentials = useCallback(
+    async (candidateUrl?: string | null, candidateToken?: string | null) => {
+      if (scanLockRef.current) return;
+      scanLockRef.current = true;
+      setChecking(true);
+      setStatus({ ok: true, text: 'PROBING MAC UMBILICAL & VERIFYING HANDSHAKE…' });
+
+      try {
+        const res = await resolveAndVerifyPairing(candidateUrl, candidateToken);
+        setChecking(false);
+        if (!res.ok || !res.bridgeUrl || !res.token) {
+          setStatus({ ok: false, text: res.message });
+          setTimeout(() => {
+            scanLockRef.current = false;
+          }, 1200);
+          return;
+        }
+
+        try {
+          Vibration.vibrate(60);
+        } catch {
+          /* ignore */
+        }
+        setUrl(res.bridgeUrl);
+        setToken(res.token);
+        setStatus({ ok: true, text: res.message });
+        await setPairing(res.bridgeUrl, res.token);
+        scanLockRef.current = false;
+        if (navigation?.canGoBack?.()) {
+          navigation.goBack();
+        } else if (navigation?.navigate) {
+          navigation.navigate('Landing');
+        }
+      } catch (e: any) {
+        setChecking(false);
+        setStatus({
+          ok: false,
+          text: e?.message ?? 'Failed to verify Mac bridge connection',
+        });
+        setTimeout(() => {
+          scanLockRef.current = false;
+        }, 1200);
+      }
+    },
+    [navigation, setPairing],
+  );
+
+  const handleRawPayload = useCallback(
+    async (raw: string, fromDeepLink = false) => {
+      if (!raw || scanLockRef.current) return;
+      // Ignore plain initial Expo Go boot URL (`exp://ip:8081` with no path/query) on app mount
+      // so opening the Pair screen intentionally doesn't immediately exit before scanning.
+      if (
+        fromDeepLink &&
+        /^exps?:\/\/[^/?#]+\/?$/i.test(raw.trim()) &&
+        !raw.includes('pair') &&
+        !raw.includes('token=')
+      ) {
+        return;
+      }
+
+      const parsed = parsePairingInput(raw);
+      if (!parsed) {
+        const now = Date.now();
+        if (
+          lastInvalidScanRef.current.raw !== raw ||
+          now - lastInvalidScanRef.current.at > 2500
+        ) {
+          lastInvalidScanRef.current = { raw, at: now };
+          setStatus({
+            ok: false,
+            text: 'Unrecognized QR code — point camera at the CUSS Mac Menu Bar QR code.',
+          });
+        }
+        return;
+      }
+
+      await connectWithCredentials(parsed.bridgeUrl, parsed.token);
+    },
+    [connectWithCredentials],
+  );
+
   useEffect(() => {
-    const sub = Linking.addEventListener('url', ({ url: link }) => void handleLink(link));
-    Linking.getInitialURL().then((link) => {
-      if (link) void handleLink(link);
+    const sub = Linking.addEventListener('url', ({ url: link }) => {
+      void handleRawPayload(link, true);
     });
-    return () => sub.remove();
-  }, []);
+    Linking.getInitialURL().then((link) => {
+      if (link) void handleRawPayload(link, true);
+    });
 
-  async function save(urlIn: string, tokenIn: string) {
-    const cleanUrl = urlIn.trim().replace(/\/$/, '');
-    const cleanToken = tokenIn.trim();
-    if (!/^https?:\/\//.test(cleanUrl)) {
-      setStatus({ ok: false, text: 'Address must start with http:// (e.g. http://192.168.1.10:4040)' });
-      return;
+    let modernSub: { remove: () => void } | null = null;
+    try {
+      if ((CameraView as any).onModernBarcodeScanned) {
+        modernSub = CameraView.onModernBarcodeScanned((event) => {
+          if (event?.data) {
+            if ((CameraView as any).dismissScanner) {
+              void CameraView.dismissScanner().catch(() => {});
+            }
+            void handleRawPayload(event.data, false);
+          }
+        });
+      }
+    } catch {
+      /* optional native scanner listener */
     }
-    setChecking(true);
-    setStatus({ ok: true, text: 'PROBING MAC UMBILICAL…' });
-    const res = await verifyBridge(cleanUrl);
-    setChecking(false);
-    if (!res.ok) {
-      setStatus({ ok: false, text: res.message });
-      setScanned(false);
-      return;
-    }
-    setStatus({ ok: true, text: res.message });
-    await setPairing(cleanUrl, cleanToken);
-  }
 
-  async function handleLink(link: string) {
-    if (!link.startsWith('missioncontrol://pair')) return;
-    const u = new URL(link);
-    const bridgeUrl = u.searchParams.get('url');
-    const t = u.searchParams.get('token');
-    if (bridgeUrl && t) await save(bridgeUrl, t);
+    return () => {
+      sub.remove();
+      modernSub?.remove();
+    };
+  }, [handleRawPayload]);
+
+  async function handleLaunchNativeScanner() {
+    try {
+      if ((CameraView as any).isModernBarcodeScannerAvailable && CameraView.launchScanner) {
+        await CameraView.launchScanner({
+          barcodeTypes: ['qr'],
+          isHighlightingEnabled: true,
+          isGuidanceEnabled: true,
+          isPinchToZoomEnabled: true,
+        });
+      } else {
+        setCameraKey((k) => k + 1);
+        scanLockRef.current = false;
+      }
+    } catch {
+      setCameraKey((k) => k + 1);
+      scanLockRef.current = false;
+    }
   }
 
   if (!permission) return <View style={styles.root} />;
+
+  const canGoBack = Boolean(navigation?.canGoBack?.() && existingBridgeUrl && existingToken);
+  const liveDetectedUrl = detectLiveMacBridgeUrl();
 
   return (
     <KeyboardAvoidingView
@@ -100,8 +196,17 @@ export default function PairScreen() {
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
       >
+        {canGoBack ? (
+          <View style={styles.topBackRow}>
+            <SpringButton style={styles.backChip} onPress={() => navigation.goBack()}>
+              <ArrowLeft size={13} color={COLORS.lime} />
+              <Text style={styles.backChipText}>BACK TO STUDIO</Text>
+            </SpringButton>
+          </View>
+        ) : null}
+
         <View style={styles.brandHeader}>
-          <CussCyberOrbLottie size={68} />
+          <CussCyberOrbLottie size={64} />
           <Text style={styles.brandWordmark}>CUSS</Text>
           <Text style={styles.brandTag}>CYBERNETIC UMBILICAL STUDIO // MAC CURSOR DECK</Text>
         </View>
@@ -113,11 +218,22 @@ export default function PairScreen() {
             <QrCode size={32} color={COLORS.lime} />
             <Text style={styles.cardTitle}>CAMERA OPTICS REQUIRED</Text>
             <Text style={styles.cardSub}>
-              Grant camera access to scan the QR reticle printed by your Mac bridge, or link manually with your IP and token.
+              Grant camera access to scan the QR reticle from ⚡ CUSS → Pair Phone in your Mac menu bar, or auto-pair over Wi-Fi in one tap.
             </Text>
             <SpringButton style={styles.primaryBtn} onPress={requestPermission} tiltOnPress>
               <Sparkles size={16} color={COLORS.bg} />
-              <Text style={styles.primaryBtnText}>ENABLE OPTICS</Text>
+              <Text style={styles.primaryBtnText}>ENABLE CAMERA OPTICS</Text>
+            </SpringButton>
+            <SpringButton
+              style={styles.wifiPairBtn}
+              disabled={checking}
+              onPress={() => void connectWithCredentials(liveDetectedUrl ?? url, undefined)}
+              tiltOnPress
+            >
+              <Wifi size={15} color={COLORS.lime} />
+              <Text style={styles.wifiPairBtnText}>
+                1-TAP AUTO-PAIR ON WI-FI ({(liveDetectedUrl ?? url).replace(/^https?:\/\//, '')})
+              </Text>
             </SpringButton>
             <SpringButton style={styles.secondaryBtn} onPress={() => setManual(true)}>
               <Laptop size={15} color={COLORS.cyan} />
@@ -138,10 +254,10 @@ export default function PairScreen() {
               value={url}
               onChangeText={setUrl}
             />
-            <Text style={styles.fieldLabel}>PAIRING TOKEN</Text>
+            <Text style={styles.fieldLabel}>PAIRING TOKEN (OPTIONAL ON SAME WI-FI)</Text>
             <TextInput
               style={styles.input}
-              placeholder="48-character hex token"
+              placeholder="Auto-fetched on LAN, or paste 48-char hex token"
               placeholderTextColor={COLORS.dim}
               autoCapitalize="none"
               autoCorrect={false}
@@ -151,7 +267,7 @@ export default function PairScreen() {
             <SpringButton
               style={[styles.primaryBtn, checking && { opacity: 0.6 }]}
               disabled={checking}
-              onPress={() => url && token && save(url, token)}
+              onPress={() => void connectWithCredentials(url, token || undefined)}
               tiltOnPress
             >
               {checking ? (
@@ -170,25 +286,65 @@ export default function PairScreen() {
           </View>
         ) : (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>SCAN MAC TERMINAL QR</Text>
+            <Text style={styles.cardTitle}>SCAN MAC MENU BAR QR</Text>
+            <Text style={styles.cardSub}>
+              Click ⚡ CUSS → Pair Phone in your Mac menu bar and point at any QR tab.
+            </Text>
             <View style={styles.cameraFrame}>
               <CameraView
+                key={`cam-${cameraKey}`}
                 style={StyleSheet.absoluteFill}
+                facing="back"
+                autofocus="off"
                 barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-                onBarcodeScanned={
-                  scanned
-                    ? undefined
-                    : ({ data }) => {
-                        setScanned(true);
-                        void handleLink(data);
-                      }
-                }
+                onBarcodeScanned={({ data }) => {
+                  if (data) void handleRawPayload(data, false);
+                }}
               />
               <View style={styles.cornerTL} />
               <View style={styles.cornerTR} />
               <View style={styles.cornerBL} />
               <View style={styles.cornerBR} />
             </View>
+
+            <View style={styles.scannerActionsRow}>
+              <SpringButton
+                style={styles.smallActionChip}
+                onPress={() => {
+                  scanLockRef.current = false;
+                  setStatus(null);
+                  setCameraKey((k) => k + 1);
+                }}
+              >
+                <RefreshCw size={12} color={COLORS.cyan} />
+                <Text style={styles.smallActionChipText}>RESET OPTICS</Text>
+              </SpringButton>
+
+              {(CameraView as any).isModernBarcodeScannerAvailable ? (
+                <SpringButton
+                  style={[styles.smallActionChip, { borderColor: COLORS.lime }]}
+                  onPress={() => void handleLaunchNativeScanner()}
+                >
+                  <QrCode size={12} color={COLORS.lime} />
+                  <Text style={[styles.smallActionChipText, { color: COLORS.lime }]}>
+                    FULLSCREEN SCANNER
+                  </Text>
+                </SpringButton>
+              ) : null}
+            </View>
+
+            <SpringButton
+              style={styles.wifiPairBtn}
+              disabled={checking}
+              onPress={() => void connectWithCredentials(liveDetectedUrl ?? url, undefined)}
+              tiltOnPress
+            >
+              <Wifi size={15} color={COLORS.lime} />
+              <Text style={styles.wifiPairBtnText} numberOfLines={1}>
+                1-TAP AUTO-PAIR ON WI-FI ({(liveDetectedUrl ?? url).replace(/^https?:\/\//, '')})
+              </Text>
+            </SpringButton>
+
             <SpringButton style={styles.secondaryBtn} onPress={() => setManual(true)}>
               <Laptop size={15} color={COLORS.cyan} />
               <Text style={styles.secondaryBtnText}>ENTER IP &amp; TOKEN MANUALLY</Text>
@@ -240,18 +396,41 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    padding: 22,
+    padding: 20,
+    paddingTop: 44,
+  },
+  topBackRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  backChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.lime,
+    borderRadius: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  backChipText: {
+    fontFamily: FONTS.monoBold,
+    fontSize: 10,
+    color: COLORS.lime,
+    letterSpacing: 0.9,
   },
   brandHeader: {
     alignItems: 'center',
-    marginBottom: 14,
+    marginBottom: 12,
   },
   brandWordmark: {
     fontFamily: FONTS.mogi,
-    fontSize: 52,
+    fontSize: 48,
     color: COLORS.lime,
     letterSpacing: 3,
-    marginTop: 4,
+    marginTop: 2,
   },
   brandTag: {
     fontFamily: FONTS.monoBold,
@@ -279,10 +458,10 @@ const styles = StyleSheet.create({
   },
   cardSub: {
     fontFamily: FONTS.body,
-    fontSize: 13.5,
+    fontSize: 13,
     color: COLORS.muted,
     textAlign: 'center',
-    lineHeight: 20,
+    lineHeight: 19,
   },
   fieldLabel: {
     alignSelf: 'flex-start',
@@ -305,20 +484,20 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   cameraFrame: {
-    width: 248,
-    height: 248,
+    width: 256,
+    height: 256,
     borderRadius: 18,
     overflow: 'hidden',
     borderWidth: 1.5,
     borderColor: COLORS.borderHi,
-    marginVertical: 8,
+    marginVertical: 4,
   },
   cornerTL: {
     position: 'absolute',
     top: 12,
     left: 12,
-    width: 22,
-    height: 22,
+    width: 24,
+    height: 24,
     borderTopWidth: 3,
     borderLeftWidth: 3,
     borderColor: COLORS.lime,
@@ -327,8 +506,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 12,
     right: 12,
-    width: 22,
-    height: 22,
+    width: 24,
+    height: 24,
     borderTopWidth: 3,
     borderRightWidth: 3,
     borderColor: COLORS.lime,
@@ -337,8 +516,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 12,
     left: 12,
-    width: 22,
-    height: 22,
+    width: 24,
+    height: 24,
     borderBottomWidth: 3,
     borderLeftWidth: 3,
     borderColor: COLORS.lime,
@@ -347,11 +526,55 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 12,
     right: 12,
-    width: 22,
-    height: 22,
+    width: 24,
+    height: 24,
     borderBottomWidth: 3,
     borderRightWidth: 3,
     borderColor: COLORS.lime,
+  },
+  scannerActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    width: '100%',
+  },
+  smallActionChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.plate,
+    borderWidth: 1,
+    borderColor: COLORS.cyan,
+    borderRadius: 9,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+  },
+  smallActionChipText: {
+    fontFamily: FONTS.monoBold,
+    fontSize: 10,
+    color: COLORS.cyan,
+    letterSpacing: 0.8,
+  },
+  wifiPairBtn: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: COLORS.plate,
+    borderWidth: 1.4,
+    borderColor: COLORS.lime,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginTop: 2,
+  },
+  wifiPairBtnText: {
+    fontFamily: FONTS.monoBold,
+    fontSize: 11,
+    color: COLORS.lime,
+    letterSpacing: 0.8,
   },
   primaryBtn: {
     width: '100%',

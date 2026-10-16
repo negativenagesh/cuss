@@ -13,6 +13,12 @@ describe('PairingAuthGuard (SPEC.md §4 auth)', () => {
     expect(guard.canActivate(ctx({ path: '/api/health' }))).toBe(true);
   });
 
+  it('allows /api/auto-pair and /api/pair without a token', () => {
+    expect(guard.canActivate(ctx({ path: '/api/auto-pair' }))).toBe(true);
+    expect(guard.canActivate(ctx({ path: '/api/pair' }))).toBe(true);
+    expect(guard.canActivate(ctx({ path: '/api/pair?token=secret-token' }))).toBe(true);
+  });
+
   it('accepts a Bearer header token', () => {
     expect(
       guard.canActivate(ctx({ path: '/api/agents', headers: { authorization: 'Bearer secret-token' }, query: {} })),
