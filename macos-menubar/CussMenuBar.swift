@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     let configDir = NSHomeDirectory() + "/.config/mission-control"
     let configPath = NSHomeDirectory() + "/.config/mission-control/config.json"
+    let tunnelPath = NSHomeDirectory() + "/.config/mission-control/tunnel.json"
     let installPath = NSHomeDirectory() + "/.config/mission-control/install.json"
     let authJsonPath = NSHomeDirectory() + "/.cursor/auth.json"
     let stateDbPath = NSHomeDirectory() + "/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
@@ -196,14 +197,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return generated
     }
 
+    func getTunnelUrl() -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: tunnelPath)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let url = json["tunnelUrl"] as? String,
+              url.hasPrefix("https://") else { return nil }
+        return url
+    }
+
     func pairingDeepLink(ip: String, token: String) -> String {
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "&=+#?")
-        let url = "http://\(ip):4040".addingPercentEncoding(withAllowedCharacters: allowed) ?? "http%3A%2F%2F\(ip)%3A4040"
-        return "missioncontrol://pair?url=\(url)&token=\(token)"
+        let lan = "http://\(ip):4040"
+        let encLan = lan.addingPercentEncoding(withAllowedCharacters: allowed) ?? "http%3A%2F%2F\(ip)%3A4040"
+        if let tun = getTunnelUrl(),
+           let encTun = tun.addingPercentEncoding(withAllowedCharacters: allowed) {
+            return "missioncontrol://pair?url=\(encLan)&tunnel=\(encTun)&token=\(token)"
+        }
+        return "missioncontrol://pair?url=\(encLan)&token=\(token)"
     }
 
     func universalHttpPairLink(ip: String, token: String) -> String {
+        if let tun = getTunnelUrl() {
+            return "\(tun)/api/pair?token=\(token)"
+        }
         return "http://\(ip):4040/api/pair?token=\(token)"
     }
 
@@ -519,10 +536,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         header.frame = NSRect(x: infoX, y: 318, width: infoW, height: 22)
         content.addSubview(header)
 
+        let tunnelUrl = getTunnelUrl()
+        let tunnelLine = "\nWORLDWIDE TUNNEL (ANY NETWORK / 5G)\n\(tunnelUrl ?? "connecting worldwide tunnel…")"
         let tailscaleLine = tailscaleIp != nil ? "\nTAILSCALE BRIDGE\nhttp://\(tailscaleIp!):4040" : ""
         let details = NSTextField(wrappingLabelWithString: """
         MAC BRIDGE (LAN WI-FI)
-        http://\(ip):4040\(tailscaleLine)
+        http://\(ip):4040\(tunnelLine)\(tailscaleLine)
 
         EXPO GO DEV SERVER
         \(expoUri)

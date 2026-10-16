@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { LocalAgentService, PromptTurnOptions } from './local-agent';
 import { ExecutionMode, PromptAttachments } from './model-catalog';
+import { readCursorOAuthCredentials } from './tunnel';
 
 interface CreateLocalAgentDto {
   prompt?: string;
@@ -53,7 +54,20 @@ export class LocalAgentsController {
 
   @Get('auth/status')
   async authStatus() {
-    return await this.local.getAuthStatus();
+    const st = await this.local.getAuthStatus();
+    const creds = readCursorOAuthCredentials();
+    return {
+      ...st,
+      email: st.email || creds.email,
+      loggedIn: st.loggedIn || Boolean(creds.accessToken),
+      cursorAuth: creds.accessToken
+        ? {
+            accessToken: creds.accessToken,
+            refreshToken: creds.refreshToken,
+            email: st.email || creds.email,
+          }
+        : undefined,
+    };
   }
 
   @Post('auth/login')
@@ -82,6 +96,17 @@ export class LocalAgentsController {
   syncIde() {
     const agents = this.local.syncIdeTranscripts(4);
     return { agents };
+  }
+
+  @Post('sync-device')
+  syncDevice(
+    @Body()
+    body?: {
+      agents?: any[];
+      transcripts?: Record<string, any[]>;
+    },
+  ) {
+    return this.local.syncFromDevice(body?.agents ?? [], body?.transcripts);
   }
 
   @Get('ide-state')

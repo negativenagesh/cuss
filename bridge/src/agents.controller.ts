@@ -14,6 +14,11 @@ import {
 } from '@nestjs/common';
 import { CursorApi, CursorApiError, CreateAgentInput } from './cursor-api';
 import { localAddresses } from './config';
+import {
+  getTunnelStatus,
+  listCloudBackgroundComposersViaOAuth,
+  readCursorOAuthCredentials,
+} from './tunnel';
 
 /** REST surface for the phone app (SPEC.md §4). All routes need the pairing token. */
 @Controller('api')
@@ -42,7 +47,18 @@ export class AgentsController {
 
   @Get('health')
   health() {
-    return { ok: true, service: 'cuss-bridge', version: '0.5.0', time: new Date().toISOString() };
+    const tunnel = getTunnelStatus(4040, this.pairingToken ?? '');
+    return {
+      ok: true,
+      service: 'cuss-bridge',
+      version: '0.6.0',
+      time: new Date().toISOString(),
+      tunnelUrl: tunnel.tunnelUrl,
+      lanUrl: tunnel.lanUrl,
+      tailscaleUrl: tunnel.tailscaleUrl,
+      beaconTopic: tunnel.beaconTopic,
+      caffeinateActive: tunnel.caffeinateActive,
+    };
   }
 
   @Get('auto-pair')
@@ -54,17 +70,25 @@ export class AgentsController {
       !rawHost || rawHost === '127.0.0.1' || rawHost === 'localhost'
         ? lanIp
         : rawHost;
-    const bridgeUrl = `http://${hostOnly}:4040`;
+    const isHttpsTunnel = rawHost.endsWith('.lhr.life') || rawHost.endsWith('.trycloudflare.com');
+    const bridgeUrl = isHttpsTunnel ? `https://${rawHost}` : `http://${hostOnly}:4040`;
     const token = this.pairingToken ?? '';
+    const tunnel = getTunnelStatus(4040, token);
+    const cursorAuth = readCursorOAuthCredentials();
     return {
       ok: true,
       service: 'cuss-bridge',
-      version: '0.5.0',
+      version: '0.6.0',
       url: bridgeUrl,
+      lanUrl: tunnel.lanUrl,
+      tunnelUrl: tunnel.tunnelUrl,
+      tailscaleUrl: tunnel.tailscaleUrl,
+      beaconTopic: tunnel.beaconTopic,
       token,
       addresses: addrs,
+      cursorAuth,
       deepLink: `missioncontrol://pair?url=${encodeURIComponent(bridgeUrl)}&token=${token}`,
-      expoLink: `exp://${hostOnly}:8081/--/pair?url=${encodeURIComponent(bridgeUrl)}&token=${token}`,
+      expoLink: `exp://${lanIp}:8081/--/pair?url=${encodeURIComponent(bridgeUrl)}&token=${token}`,
     };
   }
 
@@ -82,20 +106,28 @@ export class AgentsController {
       !rawHost || rawHost === '127.0.0.1' || rawHost === 'localhost'
         ? lanIp
         : rawHost;
-    const bridgeUrl = `http://${hostOnly}:4040`;
+    const isHttpsTunnel = rawHost.endsWith('.lhr.life') || rawHost.endsWith('.trycloudflare.com');
+    const bridgeUrl = isHttpsTunnel ? `https://${rawHost}` : `http://${hostOnly}:4040`;
     const token = this.pairingToken ?? '';
+    const tunnel = getTunnelStatus(4040, token);
+    const cursorAuth = readCursorOAuthCredentials();
     const encUrl = encodeURIComponent(bridgeUrl);
     const deepLink = `missioncontrol://pair?url=${encUrl}&token=${token}`;
-    const expoLink = `exp://${hostOnly}:8081/--/pair?url=${encUrl}&token=${token}`;
+    const expoLink = `exp://${lanIp}:8081/--/pair?url=${encUrl}&token=${token}`;
 
     const accept = String(req?.headers?.accept ?? '');
     if (format === 'json' || (accept.includes('application/json') && !accept.includes('text/html'))) {
       return res.json({
         ok: true,
         service: 'cuss-bridge',
-        version: '0.5.0',
+        version: '0.6.0',
         url: bridgeUrl,
+        lanUrl: tunnel.lanUrl,
+        tunnelUrl: tunnel.tunnelUrl,
+        tailscaleUrl: tunnel.tailscaleUrl,
+        beaconTopic: tunnel.beaconTopic,
         token,
+        cursorAuth,
         deepLink,
         expoLink,
       });
@@ -201,6 +233,10 @@ export class AgentsController {
 
   @Get('agents')
   async list() {
+    if (!this.api) {
+      const oauthAgents = await listCloudBackgroundComposersViaOAuth();
+      return { agents: oauthAgents };
+    }
     try {
       const page = await this.client().listAgents(100);
       return {

@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule } from './app.module';
 import { loadConfig, localAddresses, pairingUrl } from './config';
+import { startWorldwideTunnel } from './tunnel';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const qrcode = require('qrcode-terminal');
 
@@ -42,6 +43,7 @@ async function bootstrap() {
   }
 
   console.log(`\nMission Control bridge listening on port ${config.port}`);
+  startWorldwideTunnel(config.port, config.pairingToken);
   if (!config.apiKey) {
     console.log('WARNING: CURSOR_API_KEY is not set — API routes will return 500 no_api_key.');
     console.log('Create a key at https://cursor.com/dashboard/api and restart with CURSOR_API_KEY=...');
