@@ -209,7 +209,7 @@ export default function DashboardScreen({ navigation }: any) {
       try {
         const [cloud, local, models, projs, ide] = await Promise.allSettled([
           listAgents(),
-          localList(true),
+          localSyncIde(),
           localModels(false),
           localProjects(),
           localIdeState(),
@@ -280,9 +280,14 @@ export default function DashboardScreen({ navigation }: any) {
   async function handleSyncIdeSessions() {
     setSyncingIde(true);
     try {
-      const [res, ide] = await Promise.all([localSyncIde(), localIdeState()]);
+      const [res, ide, projs] = await Promise.all([
+        localSyncIde(),
+        localIdeState().catch(() => null),
+        localProjects().catch(() => null),
+      ]);
       if (Array.isArray(res?.agents)) setLocalAgents(res.agents);
       if (ide) setIdeState(ide);
+      if (Array.isArray(projs?.projects)) setProjects(projs.projects);
     } catch {
       /* ignore */
     } finally {

@@ -614,6 +614,263 @@ function writeDeviceStateSnapshot(patch: Partial<DeviceStateSnapshot>) {
   }
 }
 
+/**
+ * Convert raw Bridge `RunEvent[]` (`{ agentId, raw, at }`) OR mixed `StreamItem[]`
+ * into a clean multi-turn `StreamItem[]` array ready for `AgentDetailScreen`.
+ */
+export function normalizeEventsToStreamItems<T = any>(rawList: unknown[]): T[] {
+  if (!Array.isArray(rawList) || rawList.length === 0) return [];
+  const out: any[] = [];
+
+  const findTurnStart = () => {
+    for (let i = out.length - 1; i >= 0; i--) {
+      if (out[i]?.kind === 'user') return i;
+    }
+    return -1;
+  };
+
+  for (let idx = 0; idx < rawList.length; idx++) {
+    const entry = rawList[idx] as any;
+    if (!entry || typeof entry !== 'object') continue;
+
+    // Already a StreamItem (`{ id, kind, ... }`)
+    if (typeof entry.kind === 'string' && !entry.raw) {
+      out.push(entry);
+      continue;
+    }
+
+    const r = entry.raw ?? entry;
+    if (!r || typeof r !== 'object') continue;
+
+    if (r.type === 'cuss_user_turn' || r.type === 'user') {
+      const rawUserText =
+        r.type === 'cuss_user_turn'
+          ? String(r.text ?? '')
+          : (r.message?.content ?? [])
+              .filter((c: any) => c?.type === 'text')
+              .map((c: any) => String(c.text ?? ''))
+              .join('\n');
+      const queryMatch = /<user_query>\s*([\s\S]*?)\s*<\/user_query>/i.exec(rawUserText);
+      const unwrapped = queryMatch
+        ? queryMatch[1]
+        : rawUserText
+            .replace(/<timestamp>[\s\S]*?<\/timestamp>/gi, '')
+            .replace(/<user_info>[\s\S]*?<\/user_info>/gi, '');
+      const turnText =
+        unwrapped.replace(/^(?:\[[\s\S]*?\]\s*)+/, '').trim() || unwrapped.trim();
+      if (!turnText) continue;
+
+      // Only deduplicate if the CURRENT turn's user message has the exact same text and no assistant reply yet
+      const ts = findTurnStart();
+      const hasReplyAfter = ts >= 0 && out.slice(ts + 1).some((it) => it.kind === 'assistant');
+      if (ts >= 0 && !hasReplyAfter && String(out[ts].text ?? '').trim() === turnText) {
+        out[ts] = {
+          ...out[ts],
+          mode: r.mode ?? out[ts].mode,
+          model: r.model ?? out[ts].model,
+          effort: r.effort ?? out[ts].effort,
+          contextWindow: r.context ?? r.contextWindow ?? out[ts].contextWindow,
+          fast: r.fast ?? out[ts].fast,
+          attachments: r.attachments ?? out[ts].attachments,
+        };
+        continue;
+      }
+
+      out.push({
+        id: `usr-${idx}`,
+        kind: 'user',
+        text: turnText,
+        mode: r.mode,
+        model: r.model,
+        effort: r.effort,
+        contextWindow: r.context ?? r.contextWindow,
+        fast: r.fast,
+        attachments: r.attachments,
+      });
+      continue;
+    }
+
+    if (r.type === 'thinking' && r.text) {
+      const chunk = String(r.text);
+      const ts = findTurnStart();
+      let thkIdx = -1;
+      for (let i = out.length - 1; i > ts; i--) {
+        if (out[i].kind === 'thinking') {
+          thkIdx = i;
+          break;
+        }
+      }
+      if (thkIdx >= 0) {
+        out[thkIdx] = { ...out[thkIdx], text: out[thkIdx].text + chunk };
+      } else {
+        const newThk = { id: `thk-${idx}`, kind: 'thinking', text: chunk };
+        let astIdx = -1;
+        for (let i = out.length - 1; i > ts; i--) {
+          if (out[i].kind === 'assistant') {
+            astIdx = i;
+            break;
+          }
+        }
+        if (astIdx >= 0) out.splice(astIdx, 0, newThk);
+        else out.push(newThk);
+      }
+      continue;
+    }
+
+    if (r.type === 'tool_call') {
+      const callId = String(r.call_id ?? `tc-${idx}`);
+      const inner = r.tool_call ?? {};
+      const toolName = Object.keys(inner)[0] ?? 'tool';
+      const payload = inner[toolName] ?? {};
+      const args = payload.args ?? {};
+      const summary = String(
+        args.command ??
+          args.path ??
+          args.file_path ??
+          args.filePath ??
+          args.pattern ??
+          args.glob_pattern ??
+          args.url ??
+          toolName,
+      );
+      const outText =
+        payload?.result?.success?.interleavedOutput ??
+        payload?.result?.success?.stdout ??
+        payload?.result?.success?.content;
+      const details = outText
+        ? `OUTPUT:\n${String(outText).trim()}\n\nARGS:\n${JSON.stringify(args, null, 2)}`
+        : JSON.stringify(args, null, 2);
+      const status = String(r.subtype ?? 'completed');
+
+      const existingToolIdx = out.findIndex((it) => it.kind === 'tool' && it.callId === callId);
+      if (existingToolIdx >= 0) {
+        out[existingToolIdx] = {
+          ...out[existingToolIdx],
+          status,
+          summary,
+          details,
+        };
+      } else {
+        const newTool = {
+          id: `tool-${idx}`,
+          kind: 'tool',
+          callId,
+          toolName,
+          status,
+          summary,
+          details,
+        };
+        const ts = findTurnStart();
+        let astIdx = -1;
+        for (let i = out.length - 1; i > ts; i--) {
+          if (out[i].kind === 'assistant') {
+            astIdx = i;
+            break;
+          }
+        }
+        if (astIdx >= 0) out.splice(astIdx, 0, newTool);
+        else out.push(newTool);
+      }
+      continue;
+    }
+
+    if (r.type === 'assistant') {
+      const rawChunk = (r.message?.content ?? [])
+        .filter((c: any) => c?.type === 'text')
+        .map((c: any) => String(c.text ?? ''))
+        .join('');
+      if (!rawChunk.trim()) continue;
+      const isDelta = typeof r.timestamp_ms === 'number';
+      const ts = findTurnStart();
+      let astIdx = -1;
+      for (let i = out.length - 1; i > ts; i--) {
+        if (out[i].kind === 'assistant') {
+          astIdx = i;
+          break;
+        }
+      }
+      if (astIdx >= 0) {
+        const prevText = String(out[astIdx].text ?? '');
+        let mergedText = prevText;
+        if (isDelta) {
+          mergedText = prevText + rawChunk;
+        } else {
+          const cleanChunk = rawChunk.trim();
+          if (!prevText) mergedText = cleanChunk;
+          else if (cleanChunk.includes(prevText)) mergedText = cleanChunk;
+          else if (prevText.includes(cleanChunk)) mergedText = prevText;
+          else mergedText = `${prevText}\n\n${cleanChunk}`;
+        }
+        const updatedAst = {
+          ...out[astIdx],
+          text: mergedText,
+          isComplete: !isDelta ? true : out[astIdx].isComplete,
+        };
+        out.splice(astIdx, 1);
+        out.push(updatedAst);
+      } else {
+        out.push({
+          id: `ast-${idx}`,
+          kind: 'assistant',
+          text: isDelta ? rawChunk : rawChunk.trim(),
+          isComplete: !isDelta,
+        });
+      }
+      continue;
+    }
+
+    if (r.type === 'result') {
+      const resText = String(r.result ?? r.text ?? '').trim();
+      if (r.is_error) {
+        out.push({
+          id: `res-${idx}`,
+          kind: 'result',
+          text: resText || 'Turn failed',
+          isError: true,
+          tokensOut: r.usage?.outputTokens,
+          durationMs: r.duration_ms,
+        });
+      } else {
+        const ts = findTurnStart();
+        let astIdx = -1;
+        for (let i = out.length - 1; i > ts; i--) {
+          if (out[i].kind === 'assistant') {
+            astIdx = i;
+            break;
+          }
+        }
+        if (astIdx >= 0) {
+          const prevText = String(out[astIdx].text ?? '');
+          const nextText =
+            resText && !prevText.includes(resText)
+              ? prevText
+                ? `${prevText}\n\n${resText}`
+                : resText
+              : prevText || resText;
+          out[astIdx] = {
+            ...out[astIdx],
+            text: nextText,
+            tokensOut: r.usage?.outputTokens ?? out[astIdx].tokensOut,
+            durationMs: r.duration_ms ?? out[astIdx].durationMs,
+            isComplete: true,
+          };
+        } else if (resText) {
+          out.push({
+            id: `ast-${idx}`,
+            kind: 'assistant',
+            text: resText,
+            tokensOut: r.usage?.outputTokens,
+            durationMs: r.duration_ms,
+            isComplete: true,
+          });
+        }
+      }
+    }
+  }
+
+  return out as T[];
+}
+
 /** Load saved chat conversation items directly from the Android device's local storage. */
 export function loadDeviceChatItems<T = any>(agentId: string): T[] {
   if (!agentId) return [];
@@ -622,7 +879,7 @@ export function loadDeviceChatItems<T = any>(agentId: string): T[] {
     if (!f.exists) return [];
     const raw = f.textSync();
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? normalizeEventsToStreamItems<T>(parsed) : [];
   } catch {
     return [];
   }
@@ -632,8 +889,9 @@ export function loadDeviceChatItems<T = any>(agentId: string): T[] {
 export function saveDeviceChatItems(agentId: string, items: unknown[]) {
   if (!agentId || !Array.isArray(items)) return;
   try {
+    const normalized = normalizeEventsToStreamItems(items);
     const f = getDeviceChatFile(agentId);
-    f.write(JSON.stringify(items.slice(-200)));
+    f.write(JSON.stringify(normalized.slice(-250)));
   } catch {
     /* ignore fs errors */
   }

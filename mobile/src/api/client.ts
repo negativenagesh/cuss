@@ -2,6 +2,7 @@ import {
   useStore,
   detectLiveMacBridgeUrl,
   loadDeviceChatItems,
+  saveDeviceChatItems,
   CursorIdeState,
   LocalAgent,
   ModelFamily,
@@ -657,8 +658,39 @@ export const localAuthComplete = (body: {
 export const localAuthLogout = () =>
   api<{ loggedOut: boolean }>('/api/local/auth/logout', { method: 'POST' });
 
-export const localSyncIde = () =>
-  api<{ agents: any[] }>('/api/local/sync-ide', { method: 'POST' });
+export const localSyncIde = async () => {
+  const state = useStore.getState();
+  const deviceAgents = state.localAgents ?? [];
+  const deviceTranscripts: Record<string, any[]> = {};
+  for (const ag of deviceAgents.slice(0, 15)) {
+    const items = loadDeviceChatItems(ag.id);
+    if (items.length > 0) deviceTranscripts[ag.id] = items;
+  }
+  const wsCache = readDeviceWorkspaceCache();
+  const res = await api<{ agents: any[]; recentTranscripts?: Record<string, any[]> }>(
+    '/api/local/sync-ide',
+    {
+      method: 'POST',
+      body: {
+        deviceAgents,
+        deviceTranscripts,
+        fileEdits: wsCache.dirtyEdits,
+      },
+      timeoutMs: 20_000,
+    },
+  );
+  if (wsCache.dirtyEdits.length > 0) {
+    clearSyncedOfflineFileEdits();
+  }
+  if (res?.recentTranscripts && typeof res.recentTranscripts === 'object') {
+    for (const [id, evts] of Object.entries(res.recentTranscripts)) {
+      if (Array.isArray(evts) && evts.length > 0) {
+        saveDeviceChatItems(id, evts);
+      }
+    }
+  }
+  return res;
+};
 
 export const localIdeState = () => api<CursorIdeState>('/api/local/ide-state');
 

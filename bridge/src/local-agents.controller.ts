@@ -44,7 +44,7 @@ export class LocalAgentsController {
 
   @Get('agents')
   list(@Query('sync') sync?: string) {
-    const agents = sync === '1' ? this.local.syncIdeTranscripts(3) : this.local.list();
+    const agents = sync === '1' ? this.local.syncIdeTranscripts(50) : this.local.list();
     return {
       agents,
       account: this.local.getAccountInfo(),
@@ -93,9 +93,30 @@ export class LocalAgentsController {
   }
 
   @Post('sync-ide')
-  syncIde() {
-    const agents = this.local.syncIdeTranscripts(4);
-    return { agents };
+  syncIde(
+    @Body()
+    body?: {
+      deviceAgents?: any[];
+      deviceTranscripts?: Record<string, any[]>;
+      fileEdits?: { cwd?: string; path: string; content: string }[];
+    },
+  ) {
+    if (body?.deviceAgents || body?.deviceTranscripts || body?.fileEdits) {
+      this.local.syncFromDevice(
+        body.deviceAgents ?? [],
+        body.deviceTranscripts,
+        body.fileEdits,
+      );
+    }
+    const agents = this.local.syncIdeTranscripts(60);
+    const recentTranscripts: Record<string, any[]> = {};
+    for (const ag of agents.slice(0, 20)) {
+      const evts = this.local.getRecentEvents(ag.id);
+      if (evts.length > 0) {
+        recentTranscripts[ag.id] = evts;
+      }
+    }
+    return { agents, recentTranscripts };
   }
 
   @Post('sync-device')
