@@ -39,8 +39,10 @@ echo "→ payload: bridge"
 rsync -a --delete \
   --exclude '/test' --exclude '/dist' --exclude '/.vitest' --exclude '*.log' --exclude '.DS_Store' \
   "$ROOT/bridge/" "$PAYLOAD/bridge/"
-# drop heavyweight dev-only deps the runtime never loads
-rm -rf "$PAYLOAD/bridge/node_modules/vitest" "$PAYLOAD/bridge/node_modules/@vitest" "$PAYLOAD/bridge/node_modules/typescript" 2>/dev/null || true
+# drop heavyweight dev-only deps the runtime never loads and remove any dangling symlinks
+rm -rf "$PAYLOAD/bridge/node_modules/vitest" "$PAYLOAD/bridge/node_modules/@vitest" "$PAYLOAD/bridge/node_modules/typescript" \
+  "$PAYLOAD/bridge/node_modules/.bin/vitest" "$PAYLOAD/bridge/node_modules/.bin/tsc" "$PAYLOAD/bridge/node_modules/.bin/tsserver" 2>/dev/null || true
+find "$PAYLOAD" -type l ! -exec test -e {} \; -delete
 
 # 4. Menu bar app (compiled fresh into the payload, not into /Applications)
 echo "→ payload: CUSS Menu.app"
@@ -87,7 +89,10 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>NSHumanReadableCopyright</key><string>CUSS — Cybernetic Umbilical Studio &amp; Synth</string>
 </dict></plist>
 EOF
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+xattr -cr "$STAGE" 2>/dev/null || true
+codesign --force --deep --sign - "$MB"
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict "$APP"
 
 # 6. DMG window dressing
 cp "$ROOT/assets/brand/dmg-background.png" "$STAGE/.background/background.png"

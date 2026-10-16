@@ -94,8 +94,10 @@ final class Installer {
             },
             InstallStep(title: "STOPPING OLD SERVICES") {
                 for label in ["com.cuss.bridge", "com.cuss.menubar", "com.cuss.expo"] {
+                    _ = self.sh("/bin/launchctl", ["unload", self.agentsDir + "/\(label).plist"])
                     _ = self.sh("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
                 }
+                _ = self.sh("/bin/sh", ["-c", "/usr/sbin/lsof -ti :4040 | xargs kill -9 2>/dev/null || true"])
                 _ = self.sh("/usr/bin/pkill", ["-f", "CussMenuBar"])
                 return "launch agents unloaded"
             },
@@ -116,6 +118,22 @@ final class Installer {
             },
             InstallStep(title: "WRITING CONFIGURATION") {
                 try self.fm.createDirectory(atPath: self.configDir, withIntermediateDirectories: true)
+                let cfgPath = self.configDir + "/config.json"
+                var cfgObj: [String: Any] = ["port": 4040]
+                if let existingData = try? Data(contentsOf: URL(fileURLWithPath: cfgPath)),
+                   let existingJson = try? JSONSerialization.jsonObject(with: existingData) as? [String: Any] {
+                    cfgObj = existingJson
+                }
+                if (cfgObj["pairingToken"] as? String ?? "").isEmpty {
+                    var bytes = [UInt8](repeating: 0, count: 24)
+                    _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+                    cfgObj["pairingToken"] = bytes.map { String(format: "%02x", $0) }.joined()
+                }
+                if cfgObj["port"] == nil { cfgObj["port"] = 4040 }
+                let cfgData = try JSONSerialization.data(withJSONObject: cfgObj, options: [.prettyPrinted])
+                try cfgData.write(to: URL(fileURLWithPath: cfgPath))
+                chmod(cfgPath, 0o600)
+
                 let node = self.home + "/node/bin/node"
                 let install: [String: Any] = ["home": self.home, "node": node, "mode": "installed", "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "0"]
                 let data = try JSONSerialization.data(withJSONObject: install, options: [.prettyPrinted])
@@ -128,7 +146,7 @@ final class Installer {
             InstallStep(title: "SYNCING CURSOR LOGIN") {
                 let db = NSHomeDirectory() + "/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
                 guard self.fm.fileExists(atPath: db) else { return "Cursor not signed in yet — sign in from the phone app" }
-                func q(_ k: String) -> String { self.sh("/usr/bin/sqlite3", [db, "SELECT value FROM ItemTable WHERE key='\(k)';"]).1.trimmingCharacters(in: .whitespacesAndNewlines) }
+                func q(_ k: String) -> String { self.sh("/usr/bin/sqlite3", ["-cmd", ".timeout 1000", db, "SELECT value FROM ItemTable WHERE key='\(k)';"]).1.trimmingCharacters(in: .whitespacesAndNewlines) }
                 let a = q("cursorAuth/accessToken"), r = q("cursorAuth/refreshToken"), e = q("cursorAuth/cachedEmail")
                 guard !a.isEmpty, !r.isEmpty else { return "Cursor not signed in yet — sign in from the phone app" }
                 try self.fm.createDirectory(atPath: NSHomeDirectory() + "/.cursor", withIntermediateDirectories: true)
@@ -140,10 +158,12 @@ final class Installer {
             },
             InstallStep(title: "STARTING BACKGROUND SERVICES") {
                 for label in ["com.cuss.bridge", "com.cuss.menubar"] {
+                    _ = self.sh("/bin/launchctl", ["enable", "gui/\(getuid())/\(label)"])
                     let r = self.sh("/bin/launchctl", ["bootstrap", "gui/\(getuid())", self.agentsDir + "/\(label).plist"])
-                    if r.0 != 0 { _ = self.sh("/bin/launchctl", ["load", self.agentsDir + "/\(label).plist"]) }
+                    if r.0 != 0 { _ = self.sh("/bin/launchctl", ["load", "-w", self.agentsDir + "/\(label).plist"]) }
                 }
-                for _ in 0..<40 {
+                _ = self.sh("/usr/bin/open", ["-a", "/Applications/CUSS Menu.app"])
+                for _ in 0..<45 {
                     if self.healthy() { return "bridge online on port 4040" }
                     usleep(250_000)
                 }
@@ -166,8 +186,11 @@ final class Installer {
     }
 
     func replace(_ src: String, _ dst: String) throws {
-        if fm.fileExists(atPath: dst) { try fm.removeItem(atPath: dst) }
-        try fm.copyItem(atPath: src, toPath: dst)
+        _ = sh("/bin/rm", ["-rf", dst])
+        let r = sh("/usr/bin/ditto", [src, dst])
+        if r.0 != 0 {
+            throw InstallError.message("Failed copying \(dst): \(r.1)")
+        }
     }
 
     func bridgePlist(node: String) -> String {
@@ -202,7 +225,7 @@ final class Installer {
           <key>Label</key><string>com.cuss.menubar</string>
           <key>ProgramArguments</key><array><string>/Applications/CUSS Menu.app/Contents/MacOS/CussMenuBar</string></array>
           <key>RunAtLoad</key><true/>
-          <key>KeepAlive</key><true/>
+          <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
         </dict></plist>
         """
     }
@@ -239,6 +262,10 @@ final class Installer {
 
 // MARK: - Animated installer window
 
+final class InstallerButton: NSButton {
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
 final class InstallerView: NSView {
     let installer = Installer()
     let crest = CALayer()
@@ -253,7 +280,7 @@ final class InstallerView: NSView {
     let fill = CALayer()
     let stepLabel = NSTextField(labelWithString: "")
     let logLabel = NSTextField(wrappingLabelWithString: "")
-    let button = NSButton(title: "INSTALL CUSS", target: nil, action: nil)
+    let button = InstallerButton(title: "INSTALL CUSS", target: nil, action: nil)
     let qrView = NSImageView()
     let qrCaption = NSTextField(wrappingLabelWithString: "")
     var totalSteps = 1
@@ -451,7 +478,7 @@ final class InstallerView: NSView {
         button.layer?.cornerRadius = 12
         button.attributedTitle = NSAttributedString(string: "INSTALL CUSS", attributes: [.font: Brand.mono(13), .foregroundColor: Brand.obsidian, .kern: 2])
         button.frame = NSRect(x: x0, y: bounds.height / 2 - 96, width: 200, height: 44)
-        button.alphaValue = 0
+        button.alphaValue = 1
         button.target = self
         button.action = #selector(primaryAction)
         addSubview(button)
@@ -727,7 +754,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView = view
         window.center()
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { view.playIntro() }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

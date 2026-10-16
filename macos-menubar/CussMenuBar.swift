@@ -105,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         add(menu, "Open Accessibility Settings (for Live Keyboard echo)", #selector(openAccessibility), "")
         add(menu, "View Bridge Logs", #selector(openLogs), "l")
         menu.addItem(NSMenuItem.separator())
+        add(menu, "Quit CUSS & Stop Background Services", #selector(quitAllServices), "")
         add(menu, "Quit CUSS Menu Bar", #selector(quitApp), "q")
         statusItem.menu = menu
 
@@ -604,7 +605,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         win.contentView = content
     }
 
-    @objc func quitApp() { NSApp.terminate(nil) }
+    @objc func quitApp() {
+        timer?.invalidate()
+        hudWindow?.close()
+        if let item = statusItem {
+            NSStatusBar.system.removeStatusItem(item)
+        }
+        let plist = NSHomeDirectory() + "/Library/LaunchAgents/com.cuss.menubar.plist"
+        let uid = getuid()
+        let t = Process()
+        t.launchPath = "/bin/sh"
+        t.arguments = [
+            "-c",
+            "(/bin/launchctl unload '\(plist)' >/dev/null 2>&1; /bin/launchctl bootout gui/\(uid)/com.cuss.menubar >/dev/null 2>&1) &",
+        ]
+        try? t.run()
+        exit(0)
+    }
+
+    @objc func quitAllServices() {
+        timer?.invalidate()
+        hudWindow?.close()
+        if let item = statusItem {
+            NSStatusBar.system.removeStatusItem(item)
+        }
+        let agentsDir = NSHomeDirectory() + "/Library/LaunchAgents"
+        let uid = getuid()
+        let t = Process()
+        t.launchPath = "/bin/sh"
+        t.arguments = [
+            "-c",
+            "for lbl in com.cuss.bridge com.cuss.expo com.cuss.menubar; do /bin/launchctl unload '\(agentsDir)/'$lbl'.plist' >/dev/null 2>&1; /bin/launchctl bootout gui/\(uid)/$lbl >/dev/null 2>&1; done; /usr/sbin/lsof -ti :4040 | xargs kill -9 2>/dev/null || true; /usr/sbin/lsof -ti :8081 | xargs kill -9 2>/dev/null || true",
+        ]
+        try? t.run()
+        exit(0)
+    }
 }
 
 let app = NSApplication.shared
